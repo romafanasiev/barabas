@@ -1,0 +1,40 @@
+# Everything that is produced inside the image, or breaks it when copied from the host.
+
+# Host dependencies are built for macOS/arm and are unusable in alpine
+node_modules
+**/node_modules
+
+# Build artifacts: regenerated inside the image
+dist
+**/dist
+**/.output
+**/.tanstack
+**/.nitro
+*.tsbuildinfo
+
+# Secrets must never end up in an image layer.
+# Patterns are relative to the context root, so a bare `.env` would miss
+# apps/server/.env - the `**/` prefix is what makes this actually hold.
+**/.env
+**/.env.*
+!**/.env.example
+
+# History and noise
+.git
+.gitignore
+.DS_Store
+**/.DS_Store
+coverage
+**/*.log
+
+# Not part of the build, but would bust the cache on every edit
+.scratch
+docs
+lessons
+learning-records
+reference
+assets
+*.md
+Dockerfile
+.dockerignore
+docker-compose.yml
