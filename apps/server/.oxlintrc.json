@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "extends": ["../.oxlintrc.base.json"],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node"],
+  "env": {
+    "node": true,
+    "es2023": true
+  },
+  "rules": {
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "regex": "^\\.\\.(/\\.\\.)*/(apps/)?web/",
+            "message": "Граница приложений: server не импортирует исходники web. Контракт идёт через спеку OpenAPI (DTO -> spec -> типы веба)."
+          },
+          {
+            "group": ["**/apps/web/**", "@web/*", "#/*"],
+            "message": "Граница приложений: server не импортирует исходники web. Контракт идёт через спеку OpenAPI (DTO -> spec -> типы веба)."
+          }
+        ]
+      }
+    ],
+    "typescript/no-extraneous-class": [
+      "error",
+      {
+        "allowWithDecorator": true
+      }
+    ],
+    "typescript/consistent-type-imports": "off"
+  }
+}

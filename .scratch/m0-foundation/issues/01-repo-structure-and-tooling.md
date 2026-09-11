@@ -1,17 +1,20 @@
 # M0-01 — Структура репозитория и тулинг
 
-Status: ready-for-human
+Status: done — сделано агентом 2026-09-11 по явной просьбе Романа, см. Comments
 
 ## Задача
 
 Завести монорепо с двумя приложениями и общим тулингом:
 
 ```
-apps/api   — NestJS
-apps/web   — React + TypeScript (пока пустой каркас)
+apps/server   — NestJS
+apps/web      — React + TypeScript (TanStack Start)
 ```
 
-Настроить TypeScript в strict-режиме, ESLint, Prettier, единые скрипты в корне.
+Настроить TypeScript в strict-режиме, линтер, Prettier, единые скрипты в корне.
+
+> Имя папки — `apps/server`, не `apps/api` (решение Романа 2026-09-11).
+> Линтер — **oxlint**, не ESLint (решение Романа 2026-09-11).
 
 ## Решение по конфигам (обсуждено 2026-09-10)
 
@@ -25,7 +28,7 @@ apps/web   — React + TypeScript (пока пустой каркас)
 
 Обязательно **разное** (перечислить в конфиге явно, каждое — осознанно):
 
-| | `apps/api` | `apps/web` |
+| | `apps/server` | `apps/web` |
 | --- | --- | --- |
 | `lib` | `ES2023` — **без DOM** | `ES2023`, `DOM`, `DOM.Iterable` |
 | `jsx` | нет | `react-jsx` |
@@ -39,16 +42,16 @@ apps/web   — React + TypeScript (пока пустой каркас)
 ## Definition of Done
 
 - `npm run lint` и `npm run typecheck` проходят в обоих приложениях, запускаются из корня
-- `tsconfig.base.json` существует; настройки строгости заданы **в нём одном**, не продублированы
-- В `apps/api` отсутствует `DOM` в `lib` — проверяется тем, что `document.title` не компилируется
-- ESLint: общая база + правила, специфичные для приложения (react-hooks только для web)
+- `apps/tsconfig.base.json` существует; настройки строгости заданы **в нём одном**, не продублированы
+- В `apps/server` отсутствует `DOM` в `lib` — проверяется тем, что `document.title` не компилируется
+- Линтер: общая база + правила, специфичные для приложения (react-хуки только для web)
 - `.gitignore` покрывает `node_modules`, `dist`, `.env`
 - В git нет ни одного `.env` с реальными значениями — только `.env.example`
-- Импорт из `apps/web` в `apps/api` (и обратно) роняет `npm run lint`, включая запись через `../..`
+- Импорт из `apps/web` в `apps/server` (и обратно) роняет `npm run lint`, включая запись через `../..`
 
 ## Граница между приложениями (решено 2026-09-10)
 
-Инструмент — **ESLint**, правило `no-restricted-imports` с `patterns`. Контракт между вебом и
+Инструмент — **oxlint**, правило `no-restricted-imports` с `patterns`. Контракт между вебом и
 API проходит **через спеку OpenAPI**, а не через импорты исходников.
 
 Направление источника истины — в одну сторону, без исключений:
@@ -87,7 +90,7 @@ DTO в NestJS  →  спека OpenAPI  →  типы для веба
 
 - Не отключён ли strict «чтобы собралось»
 - Не закоммичены ли секреты (проверю историю, а не только текущее состояние)
-- Скрипты запускаются из корня, а не требуют `cd apps/api`
+- Скрипты запускаются из корня, а не требуют `cd apps/server`
 - Настройки строгости **не продублированы** в двух конфигах
 - Граница между приложениями держится правилом, а не устной договорённостью
 - Правило линтера **проверено** заведомо плохим импортом, а не принято на веру
@@ -107,3 +110,63 @@ DTO в NestJS  →  спека OpenAPI  →  типы для веба
 **2026-09-10, ревью:** оба ответа приняты, инструмент и направление контракта верные.
 Блок снят, статус `ready-for-human`. Детали, на которые наткнёшься, вынесены в раздел
 «Граница между приложениями» — читать до начала работы.
+
+**2026-09-11, Роман:** «не хочу терять время на сетап репо и тулинга, сделай эту задачу сам».
+Вместо ESLint — **oxlint**. Скрипты и конфиг линтинга лежат по папкам приложений
+(`apps/server`, `apps/web`), корень только агрегирует. Отход от review-driven режима
+подтверждён явно и ограничен этим issue — домен (M0-02 и далее) Роман делает сам.
+
+**2026-09-11, агент — что сделано:**
+
+- Корень стал pnpm workspace: `package.json` + `pnpm-workspace.yaml` (`apps/*`), один
+  lockfile вместо двух. `pnpm run lint | typecheck | format:check | build | test` из корня
+  делегируют в приложения через `pnpm -r`; `pnpm run check` прогоняет первые три подряд.
+- `apps/tsconfig.base.json` — единственное место, где живёт строгость. Из обоих tsconfig
+  убраны дубликаты `strict` / `skipLibCheck` / `isolatedModules`.
+- Убран `strictPropertyInitialization: false` из `apps/server/tsconfig.json` — это было
+  частичное отключение strict, доставшееся от шаблона Nest. Без него всё компилируется.
+- `.oxlintrc.base.json` в `apps/` + `.oxlintrc.json` в каждом приложении через `extends`.
+  React-правила (`react/rules-of-hooks`, `react/exhaustive-deps`) — только в web.
+- `.env.example` в обоих приложениях (в web был `env.example` без точки), `.gitignore`
+  сужен до `.env*` + `!.env.example`.
+
+**2026-09-11, агент — что выяснилось по ходу (важнее, чем сам результат):**
+
+1. **`oxlint.json` не подхватывается.** Дефолтное имя конфига — `.oxlintrc.json`. Файлы
+   назывались `oxlint.json`, `oxlint --print-config` их не видел: `no-restricted-imports`
+   не был в конфиге вообще. Правило существовало только на бумаге.
+2. **`paths` вместо `patterns`.** В `paths` идут точные specifier'ы, глобы там не работают.
+   Границу задаёт только `patterns` (с `group` — gitignore-стиль, или `regex`).
+3. **`require()` не ловится `no-restricted-imports`** — проверено фикстурой. Дыра закрыта
+   отдельным правилом `typescript/no-require-imports` в общей базе: оба приложения ESM,
+   `require` в них нелегитимен в принципе.
+4. **`typescript/consistent-type-imports` нельзя включать в server.** При
+   `emitDecoratorMetadata` замена `import { AppService }` на `import type` стирает метаданные
+   и ломает DI в рантайме — линтер бы «починил» рабочий код в нерабочий. В web правило включено.
+
+**2026-09-11, агент — проверки (фикстуры заведены, красноту увидели, потом убраны):**
+
+| Проверка | Результат |
+| --- | --- |
+| `pnpm run lint` из корня | проходит в обоих приложениях |
+| `pnpm run typecheck` из корня | проходит в обоих приложениях |
+| `pnpm run format:check` из корня | проходит в обоих приложениях |
+| `pnpm run build`, `pnpm run test` | проходят |
+| `document.title` в `apps/server` | `TS2584: Cannot find name 'document'` — DOM не протёк |
+| server → web: `import x from '../../web/src/env.js'` | `no-restricted-imports` |
+| server → web: `require('../../web/src/env.js')` | `typescript/no-require-imports` |
+| server → web: `await import('../../web/src/env.js')` | `no-restricted-imports` |
+| server → web: `await import('../../../apps/web/src/env.js')` | `no-restricted-imports` |
+| web → server: те же четыре формы | `no-restricted-imports` / `no-require-imports` |
+
+Два реальных нарушения границы в коде уже были и удалены:
+`apps/server/src/main.ts` импортировал `../../web/src/env.js`, `apps/web/src/env.ts`
+импортировал `../../server/vitest.config`.
+
+**2026-09-11, агент — что сознательно НЕ сделано:**
+
+- **Скрипт генерации типов из OpenAPI.** Генерировать пока нечего: DTO появляются в `M2-06`.
+  Скрипт-заглушка, который падает, хуже отсутствующего. Заводить вместе с первым DTO.
+  Заготовки под это уже есть: `**/*.gen.ts` и `**/generated/**` исключены из линта
+  (`ignorePatterns`) и из Prettier (`.prettierignore`).
+- **Проверка дрейфа контракта в CI** — по плану `M7-06`, CI ещё нет.

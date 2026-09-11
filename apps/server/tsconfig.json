@@ -1,0 +1,33 @@
+{
+  "extends": "../tsconfig.base.json",
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "vitest.config.e2e.ts"
+  ],
+  "compilerOptions": {
+    /* Платформа: Node, без DOM. Если сюда попадёт "DOM", то document/window/localStorage
+       станут типизированными как существующие — код соберётся и упадёт в рантайме. */
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node", "vitest/globals"],
+
+    /* Модули под Node */
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
+    "esModuleInterop": true,
+
+    /* Декораторы — требование NestJS */
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+
+    /* Вывод */
+    "outDir": "./dist",
+    "declaration": true,
+    "sourceMap": true,
+    "removeComments": true,
+    "incremental": true
+  }
+}

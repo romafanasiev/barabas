@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+pnpm-lock.yaml
+*.gen.ts
+.tanstack
+.output
+.nitro

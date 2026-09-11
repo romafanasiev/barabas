@@ -1,0 +1,22 @@
+{
+  "name": "barabas",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Ticketing — учебный монорепо: apps/server (NestJS) + apps/web (TanStack Start)",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@10.10.0+sha512.d615db246fe70f25dcfea6d8d73dee782ce23e2245e3c4f6f888249fb568149318637dca73c2c5c8ef2a4ca0d5657fb9567188bfab47f566d1ee6ce987815c39",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "lint:fix": "pnpm -r lint:fix",
+    "typecheck": "pnpm -r typecheck",
+    "format": "pnpm -r format",
+    "format:check": "pnpm -r format:check",
+    "test": "pnpm -r test",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run format:check"
+  }
+}

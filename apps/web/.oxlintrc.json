@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "extends": ["../.oxlintrc.base.json"],
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "oxc",
+    "import",
+    "promise",
+    "react",
+    "jsx-a11y"
+  ],
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "regex": "^\\.\\.(/\\.\\.)*/(apps/)?server/",
+            "message": "Граница приложений: web не импортирует исходники server. Типы берутся из сгенерированной спеки OpenAPI."
+          },
+          {
+            "group": ["**/apps/server/**", "@server/*"],
+            "message": "Граница приложений: web не импортирует исходники server. Типы берутся из сгенерированной спеки OpenAPI."
+          }
+        ]
+      }
+    ],
+    "typescript/consistent-type-imports": "error",
+    "react/react-in-jsx-scope": "off"
+  },
+  "ignorePatterns": [
+    "src/routeTree.gen.ts",
+    ".tanstack/**",
+    ".output/**",
+    ".nitro/**"
+  ]
+}

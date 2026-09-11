@@ -65,7 +65,7 @@ Issue живут в `.scratch/<этап>/issues/NN-<slug>.md`. Формат — 
 
 Issues:
 
-- `M0-01` Репозиторий, монорепо-структура `apps/api` + `apps/web`, tsconfig, ESLint, Prettier
+- `M0-01` Репозиторий, монорепо-структура `apps/server` + `apps/web`, tsconfig, oxlint, Prettier
 - `M0-02` `docker-compose.yml`: postgres + redis + api, с `healthcheck` и `depends_on: condition: service_healthy`
 - `M0-03` NestJS-скелет: `ConfigModule` со схемой валидации env (падать на старте, если переменной нет)
 - `M0-04` Pino-логгер + `x-request-id` correlation id через middleware/interceptor
