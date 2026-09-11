@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference — PostgreSQL: конкурентность</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Reference · шпаргалка</p>
+  <h1>PostgreSQL: конкурентность</h1>
+  <p class="standfirst">Что выбрать, когда две транзакции хотят одну строку. Для быстрого поиска, не для чтения подряд.</p>
+  <div class="meta">
+    <span>Обновлено 2026-09-11</span>
+    <span>Источник: <a href="https://www.postgresql.org/docs/current/mvcc.html">PostgreSQL Docs, гл. 13</a></span>
+  </div>
+
+  <h2>Уровни изоляции</h2>
+
+  <table>
+    <tr><th>Уровень</th><th>Что запрещает</th><th>Что всё ещё возможно</th><th>Когда брать</th></tr>
+    <tr>
+      <td><strong>Read Committed</strong><br><em>по умолчанию</em></td>
+      <td>Грязное чтение</td>
+      <td>Non-repeatable read, phantom read, <strong>lost update</strong></td>
+      <td>Почти всё. Защищайся блокировками и constraints вручную.</td>
+    </tr>
+    <tr>
+      <td><strong>Repeatable Read</strong></td>
+      <td>+ Non-repeatable и phantom read</td>
+      <td><a href="#skew">Write skew</a>. Пишущая транзакция может упасть с <code>40001</code></td>
+      <td>Отчёты и многошаговые чтения, которым нужен единый снимок.</td>
+    </tr>
+    <tr>
+      <td><strong>Serializable</strong></td>
+      <td>+ <a href="#skew">Write skew</a>, все аномалии сериализации</td>
+      <td>Ничего — но платишь ретраями</td>
+      <td>Сложные инварианты между разными строками и таблицами.</td>
+    </tr>
+  </table>
+
+  <div class="callout warn">
+    <span class="label">Обязательно к запоминанию</span>
+    <p>На <code>REPEATABLE READ</code> и <code>SERIALIZABLE</code> транзакция <strong>может упасть</strong> с <code>40001 serialization_failure</code>. Это не баг — это контракт. Если ты выбрал этот уровень, ты обязан написать ретрай с backoff. Нет ретрая — нет права использовать уровень.</p>
+  </div>
+
+  <pre><code>BEGIN ISOLATION LEVEL REPEATABLE READ;
+-- ...
+COMMIT;</code></pre>
+
+  <h2>Блокировки строк</h2>
+
+  <table>
+    <tr><th>Синтаксис</th><th>Смысл</th><th>Кого блокирует</th></tr>
+    <tr><td><code>FOR UPDATE</code></td><td>Читаю, чтобы изменить или удалить</td><td>Всех, кто хочет писать или блокировать эту строку</td></tr>
+    <tr><td><code>FOR NO KEY UPDATE</code></td><td>Изменю, но не ключевые колонки</td><td>Слабее: не мешает вставке ссылающихся FK</td></tr>
+    <tr><td><code>FOR SHARE</code></td><td>Читаю и хочу, чтобы не менялось</td><td>Пишущих; другие читатели проходят</td></tr>
+    <tr><td><code>FOR KEY SHARE</code></td><td>Самая слабая; её берёт проверка FK</td><td>Только тех, кто меняет ключ</td></tr>
+  </table>
+
+  <p class="filename">Модификаторы ожидания</p>
+  <pre><code>SELECT ... FOR UPDATE NOWAIT;      -- не ждать, сразу ошибка 55P03
+SELECT ... FOR UPDATE SKIP LOCKED; -- пропустить занятые строки
+-- SKIP LOCKED — основа очередей задач и выдачи "любых N свободных мест"</code></pre>
+
+  <h2>Три способа не продать одно место дважды</h2>
+
+  <table>
+    <tr><th>Способ</th><th>Как</th><th>Плюс</th><th>Минус</th></tr>
+    <tr>
+      <td><strong>Pessimistic</strong></td>
+      <td><code>SELECT ... FOR UPDATE</code></td>
+      <td>Просто, детерминированно</td>
+      <td>Очередь и контеншен при популярном концерте</td>
+    </tr>
+    <tr>
+      <td><strong>Optimistic</strong></td>
+      <td>Колонка <code>version</code>, <code>WHERE version = $1</code></td>
+      <td>Нет ожидания, хорошо при редких конфликтах</td>
+      <td>Нужен ретрай; при частых конфликтах хуже</td>
+    </tr>
+    <tr>
+      <td><strong>Constraint</strong></td>
+      <td><code>UNIQUE</code> / <code>CHECK</code> / <code>EXCLUDE</code></td>
+      <td>Работает всегда, даже мимо твоего кода</td>
+      <td>Ошибка приходит поздно — надо ловить код <code>23505</code></td>
+    </tr>
+  </table>
+
+  <div class="callout win">
+    <span class="label">Правило</span>
+    <p>Constraint — не альтернатива блокировке, а <strong>слой под ней</strong>. Блокировка даёт нормальный UX (аккуратный <code>409</code> вместо исключения), constraint даёт гарантию. Правильный ответ почти всегда — оба.</p>
+  </div>
+
+  <h2 id="skew">Когда правило шире одной строки: write skew</h2>
+
+  <p>Всё выше защищает случай «читаю и пишу одну строку». Если правило считает <strong>несколько</strong> строк («не больше двух VIP-мест на покупателя», «хотя бы один дежурный»), защита рассыпается: конкуренты читают одно множество, а пишут в разные строки. Конфликта версий нет, <code>REPEATABLE READ</code> молчит, <code>UNIQUE</code> не при чём. Это <strong>write skew</strong> (в документации PostgreSQL — <em>serialization anomaly</em>).</p>
+
+  <table>
+    <tr><th>Способ</th><th>Как работает</th><th>Цена</th></tr>
+    <tr>
+      <td><code>SERIALIZABLE</code><br><em>SSI</em></td>
+      <td>База запоминает прочитанные диапазоны (predicate locks) и убивает опасную транзакцию</td>
+      <td>Ретраи почти везде; частота отказов зависит от плана запроса</td>
+    </tr>
+    <tr>
+      <td>Lock на общую строку</td>
+      <td><code>SELECT ... FROM buyer WHERE id = $1 FOR UPDATE</code> перед проверкой</td>
+      <td>Ручная дисциплина: забыл в одном эндпоинте — дыра вернулась</td>
+    </tr>
+    <tr>
+      <td>Материализация конфликта</td>
+      <td>Количество становится колонкой-счётчиком, правило — <code>CHECK</code></td>
+      <td>Денормализация: счётчик меняется только в той же транзакции</td>
+    </tr>
+  </table>
+
+  <p>Только третий способ даёт <strong>constraint</strong>, то есть работает против кода, который ещё не написан. Первые два защищают лишь того, кто их применил.</p>
+
+  <h3>Что надо знать про <code>SERIALIZABLE</code>, прежде чем включать</h3>
+
+  <ul>
+    <li>Ошибка приходит часто <strong>на <code>COMMIT</code></strong>, а не на запросе. Ретраем оборачивается блок вместе с коммитом.</li>
+    <li><code>40001</code> здесь не «не повезло с горячей строкой», а обычный режим работы. Нужен <em>общий</em> механизм ретрая на все транзакции.</li>
+    <li><strong>Sequential scan всегда берёт predicate lock на всю таблицу</strong> → всплеск отказов. Индекс под условие чтения — часть решения, а не оптимизация.</li>
+    <li>Predicate locks видны как <code>SIReadLock</code>: <code>SELECT locktype, relation::regclass, mode FROM pg_locks WHERE mode = 'SIReadLock';</code></li>
+    <li>Мелкие locks сливаются в крупные при нехватке памяти (<code>max_pred_locks_per_transaction</code>, <code>_per_relation</code>, <code>_per_page</code>) — крупнее lock, больше ложных конфликтов.</li>
+    <li>Read-only транзакции помечай <code>BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY</code> — они дешевле.</li>
+    <li>SSI не ждёт и не даёт дедлоков. Он детектит.</li>
+  </ul>
+
+  <div class="callout warn">
+    <span class="label">Не путать</span>
+    <p><code>REPEATABLE READ</code> ловит конфликт <strong>записи в одну строку</strong> (first-updater-wins). <code>SERIALIZABLE</code> ловит конфликт <strong>чтения и записи в одно множество</strong>. Первое — про строку, второе — про предикат. Именно поэтому <code>REPEATABLE READ</code> не спасает от write skew.</p>
+  </div>
+
+  <h2>Атомарное списание без блокировки</h2>
+
+  <pre><code>UPDATE inventory
+   SET available = available - $2
+ WHERE ticket_type_id = $1
+   AND available &gt;= $2
+RETURNING available;
+-- 0 строк → мест нет. Проверяй rowCount, а не читай заново.</code></pre>
+
+  <p>Работает, потому что чтение, проверка и запись — одно выражение. Окна для гонки нет.</p>
+
+  <h2>Дедлоки</h2>
+
+  <p>Возникают, когда A держит строку 1 и ждёт строку 2, а B держит 2 и ждёт 1. PostgreSQL обнаружит и убьёт одну транзакцию с <code>40P01 deadlock_detected</code>.</p>
+
+  <ul>
+    <li><strong>Профилактика:</strong> всегда захватывай строки в детерминированном порядке — например, <code>ORDER BY id</code> в <code>SELECT ... FOR UPDATE</code>.</li>
+    <li><strong>Лечение:</strong> ретрай всей транзакции с exponential backoff и jitter.</li>
+    <li><strong>Диагностика:</strong> текст ошибки в логе PostgreSQL содержит обе конфликтующие команды. Читай его, а не гадай.</li>
+  </ul>
+
+  <h2>Коды ошибок, которые надо обрабатывать</h2>
+
+  <table>
+    <tr><th>Код</th><th>Имя</th><th>Что делать</th></tr>
+    <tr><td><code>23505</code></td><td>unique_violation</td><td>Конфликт → <code>409</code>. При идемпотентности — вернуть существующий результат</td></tr>
+    <tr><td><code>23514</code></td><td>check_violation</td><td>Твой инвариант сработал. Это баг в коде выше — чинить, а не глушить</td></tr>
+    <tr><td><code>40001</code></td><td>serialization_failure</td><td>Ретрай с backoff</td></tr>
+    <tr><td><code>40P01</code></td><td>deadlock_detected</td><td>Ретрай + проверить порядок захвата блокировок</td></tr>
+    <tr><td><code>55P03</code></td><td>lock_not_available</td><td>Прилетает от <code>NOWAIT</code> → <code>409</code> «попробуйте ещё раз»</td></tr>
+  </table>
+
+  <h2>Чего не делать никогда</h2>
+
+  <ul>
+    <li><strong>Держать транзакцию открытой во время сетевого вызова.</strong> Платёжный шлюз тормозит секунду — вся очередь стоит секунду.</li>
+    <li><strong>Считать Redis источником истины по остаткам.</strong> Redis — ускоритель и TTL-таймер. Гарантия живёт в PostgreSQL.</li>
+    <li><strong>Принимать решение в приложении по данным, прочитанным без блокировки.</strong> К моменту записи прочитанное уже неправда.</li>
+    <li><strong>Ловить <code>23514</code> и молча продолжать.</strong> Constraint выстрелил — значит инвариант нарушен раньше, в логике.</li>
+  </ul>
+
+  <div class="footer">
+    <h2>Источники</h2>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/transaction-iso.html">13.2. Transaction Isolation</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/explicit-locking.html">13.3. Explicit Locking</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/errcodes-appendix.html">Appendix A. PostgreSQL Error Codes</a></li>
+    </ul>
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="../lessons/0001-race-for-the-last-ticket.html">Урок 0001 — Гонка за последним билетом</a></li>
+      <li><a href="../lessons/0002-wait-or-retry.html">Урок 0002 — Ждать или падать</a></li>
+      <li><a href="../lessons/0003-rule-the-database-cannot-see.html">Урок 0003 — Правило, которое база не видит</a></li>
+      <li><a href="../ROADMAP.md">Учебный план, этап M4</a></li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>

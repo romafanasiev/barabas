@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Урок 0003 — Правило, которое база не видит</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Урок 0003 · этап M4 · конкурентность</p>
+  <h1>Правило, которое база не видит</h1>
+  <p class="standfirst">Два предыдущих урока защищали одну строку. Сейчас ты сломаешь правило, которое не лежит ни в одной строке — и база не скажет ни слова.</p>
+  <div class="meta">
+    <span>≈ 25 минут</span>
+    <span>Продолжение <a href="./0002-wait-or-retry.html">урока 0002</a></span>
+    <span>Ведёт к M4-07, M4-09, M1-13</span>
+  </div>
+
+  <h2>Сначала вспомни</h2>
+
+  <p>Без подглядывания в прошлые уроки и в шпаргалку.</p>
+
+  <div class="quiz">
+    <span class="label">Recall · 1 из 2</span>
+    <p class="q">Что нужно повторить после ошибки <code>40001</code>?</p>
+    <div class="options">
+      <button>Только упавший запрос, оставаясь внутри той транзакции</button>
+      <button data-correct>Всю транзакцию целиком, начиная с нового <code>BEGIN</code></button>
+      <button>Последний <code>COMMIT</code>, поскольку снимок данных устарел</button>
+      <button>Всю сессию <code>psql</code>, потому что соединение испорчено</button>
+    </div>
+    <p class="explain" hidden>После <code>40001</code> транзакция мертва: снимок, на котором она принимала решения, недействителен. Нужен <code>ROLLBACK</code>, новый <code>BEGIN</code>, новое чтение и новое решение — возможно, уже противоположное.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Recall · 2 из 2</span>
+    <p class="q">Какой код прилетает от <code>SELECT ... FOR UPDATE NOWAIT</code>, если строка занята?</p>
+    <div class="options">
+      <button><code>40001</code> — serialization_failure</button>
+      <button><code>40P01</code> — deadlock_detected</button>
+      <button data-correct><code>55P03</code> — lock_not_available</button>
+      <button><code>23505</code> — unique_violation</button>
+    </div>
+    <p class="explain" hidden><code>NOWAIT</code> — это отказ ждать. Вместо ожидания сразу приходит <code>55P03</code>, и это хороший кандидат на честный <code>409</code> с «попробуйте ещё раз»: ты сам решаешь, сколько готов ждать, а не ждёшь неизвестно сколько.</p>
+  </div>
+
+  <h2>Правило шириной больше одной строки</h2>
+
+  <p>В <a href="./0001-race-for-the-last-ticket.html">уроке 0001</a> и <a href="./0002-wait-or-retry.html">уроке 0002</a> правило было такое: <em>остаток не может уйти ниже нуля</em>. Одно правило, одна строка. Поэтому всё работало: <code>FOR UPDATE</code> блокирует эту строку, <code>REPEATABLE READ</code> замечает чужой коммит в эту строку, <code>CHECK</code> проверяет эту строку.</p>
+
+  <p>Теперь возьмём правило из нашего домена, которое так не устроено:</p>
+
+  <blockquote>Один покупатель не может держать больше двух VIP-мест одновременно.</blockquote>
+
+  <p>Посмотри, что с ним не так с точки зрения базы. Оно не про уникальность — места-то разные, <code>UNIQUE (seat)</code> тут ни при чём. Оно не про одну строку — правило считает <strong>количество строк</strong>, а количество не лежит ни в одной из них. И блокировать нечего: два конкурента берут <strong>разные</strong> места, каждый честно блокирует своё.</p>
+
+  <div class="callout">
+    <span class="label">Что сейчас проверяем</span>
+    <p>Проверка (<code>SELECT count(*)</code>) и запись (<code>INSERT</code>) касаются разных данных. Всё, что ты выучил, защищало случай, когда читаешь и пишешь <em>одну и ту же</em> строку. Здесь этого совпадения нет — и вся защита рассыпается.</p>
+  </div>
+
+  <h2>Полигон</h2>
+
+  <pre><code>docker run --rm -d --name tix-lab -e POSTGRES_PASSWORD=lab -p 5433:5432 postgres:18
+docker exec -i tix-lab psql -U postgres &lt;&lt;'SQL'
+CREATE TABLE vip_hold (
+  id       bigserial PRIMARY KEY,
+  buyer_id int  NOT NULL,
+  seat     text NOT NULL UNIQUE
+);
+CREATE INDEX vip_hold_buyer_idx ON vip_hold (buyer_id);
+INSERT INTO vip_hold (buyer_id, seat) VALUES (1, 'A1');
+SQL</code></pre>
+
+  <p>У покупателя <code>1</code> сейчас одно VIP-место. По правилу ему можно ещё ровно одно. Открой два терминала: <code>docker exec -it tix-lab psql -U postgres</code> в каждом.</p>
+
+  <h2>Опыт 1: дыра</h2>
+
+  <p>Бери самый сильный уровень из тех, что ты уже знаешь, — <code>REPEATABLE READ</code>. Шаги выполняй строго в порядке номеров, переключаясь между терминалами.</p>
+
+  <div class="terminals">
+    <div>
+      <p class="filename">Терминал A · вкладка Ани</p>
+      <pre><code>-- (1)
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM vip_hold
+ WHERE buyer_id = 1;
+--  count = 1
+--  1 &lt; 2 → можно, разрешаю
+
+-- (3)
+INSERT INTO vip_hold (buyer_id, seat)
+VALUES (1, 'A2');
+--  INSERT 0 1
+
+-- (5)
+COMMIT;
+--  COMMIT</code></pre>
+    </div>
+    <div>
+      <p class="filename">Терминал B · вторая вкладка Ани</p>
+      <pre><code>-- (2)
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM vip_hold
+ WHERE buyer_id = 1;
+--  count = 1
+--  1 &lt; 2 → можно, разрешаю
+
+-- (4)
+INSERT INTO vip_hold (buyer_id, seat)
+VALUES (1, 'A3');
+--  INSERT 0 1
+
+-- (6)
+COMMIT;
+--  COMMIT</code></pre>
+    </div>
+  </div>
+
+  <p>Теперь посчитай результат:</p>
+
+  <pre><code>SELECT count(*) FROM vip_hold WHERE buyer_id = 1;
+--  count = 3</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Обрати внимание на главное</span>
+    <p>Три VIP-места при лимите два. <strong>Ни одной ошибки, ни одного ожидания, оба <code>COMMIT</code> успешны.</strong> Самый сильный уровень изоляции из твоего арсенала не заметил вообще ничего — точно как <code>Read Committed</code> в уроке 0001. Только там ты хотя бы получил испорченное число в знакомой строке, а здесь испорчено то, чего в базе нет: правило.</p>
+  </div>
+
+  <h2>Почему база молчала</h2>
+
+  <p>На <code>REPEATABLE READ</code> каждая транзакция работает со своим снимком. Правило <em>first-updater-wins</em> из прошлого урока срабатывает, когда две транзакции пишут в <strong>одну и ту же строку</strong>: вторая обнаруживает, что её снимок уже не соответствует реальности, и падает с <code>40001</code>.</p>
+
+  <p>Здесь писали в разные строки. Столкновения версий нет, зацепиться не за что. Каждая транзакция по отдельности абсолютно корректна: прочитала, проверила лимит, вставила одно место. Некорректен только их <strong>совместный результат</strong> — и это свойство пары, а не свойство строки.</p>
+
+  <div class="callout">
+    <span class="label">Определение</span>
+    <p><strong>Write skew</strong> — аномалия, при которой две транзакции читают одно и то же множество данных, каждая принимает решение по прочитанному и пишет <strong>в разные</strong> строки, из-за чего условие, проверенное обеими, перестаёт быть верным. Lost update — частный случай write skew, где «разные строки» совпали в одну.</p>
+    <p>Термин — из DDIA, глава 7. В документации PostgreSQL ты найдёшь эту же вещь под названием <em>serialization anomaly</em>: результат, невозможный ни при каком последовательном исполнении тех же транзакций.</p>
+  </div>
+
+  <h2>Опыт 2: <code>SERIALIZABLE</code></h2>
+
+  <p>Верни состояние к исходному и повтори те же шесть шагов, поменяв только уровень:</p>
+
+  <pre><code>docker exec -i tix-lab psql -U postgres -c "DELETE FROM vip_hold WHERE seat IN ('A2','A3');"</code></pre>
+
+  <div class="terminals">
+    <div>
+      <p class="filename">Терминал A</p>
+      <pre><code>-- (1)
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT count(*) FROM vip_hold
+ WHERE buyer_id = 1;
+
+-- (3)
+INSERT INTO vip_hold (buyer_id, seat)
+VALUES (1, 'A2');
+
+-- (5)
+COMMIT;
+--  COMMIT</code></pre>
+    </div>
+    <div>
+      <p class="filename">Терминал B</p>
+      <pre><code>-- (2)
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT count(*) FROM vip_hold
+ WHERE buyer_id = 1;
+
+-- (4)
+INSERT INTO vip_hold (buyer_id, seat)
+VALUES (1, 'A3');
+--  INSERT 0 1  ← проходит!
+
+-- (6)
+COMMIT;
+--  ERROR: 40001</code></pre>
+    </div>
+  </div>
+
+  <pre><code>ERROR:  could not serialize access due to read/write dependencies among transactions</code></pre>
+
+  <p>Прочитай <code>DETAIL</code> и <code>HINT</code> целиком — они там не для красоты. В <code>DETAIL</code> база объяснит, за что именно казнила транзакцию, а в <code>HINT</code> прямым текстом скажет, что делать: <em>the transaction might succeed if retried</em>.<sup>1</sup></p>
+
+  <p>Механика другая, чем всё, что ты видел раньше. <code>SERIALIZABLE</code> в PostgreSQL — это <strong>SSI</strong>, Serializable Snapshot Isolation. Он не блокирует. Он <em>запоминает, что ты читал</em>: на каждый прочитанный диапазон берётся predicate lock, который видно в <code>pg_locks</code> с режимом <code>SIReadLock</code>.<sup>2</sup> Когда кто-то пишет в диапазон, который ты читал, и наоборот, база строит граф этих зависимостей и ищет в нём опасный узор. Нашла — убивает одну из транзакций.</p>
+
+  <div class="quiz">
+    <span class="label">Проверь себя</span>
+    <p class="q">Почему ошибка пришла на <code>COMMIT</code>, а не на <code>INSERT</code>?</p>
+    <div class="options">
+      <button>Потому что <code>INSERT</code> не проверяет никакие ограничения схемы</button>
+      <button>Потому что база откладывает любые проверки до конца транзакции</button>
+      <button data-correct>Потому что опасен узор из транзакций, а он виден только целиком</button>
+      <button>Потому что <code>SELECT count(*)</code> вернул устаревшее значение из снимка</button>
+    </div>
+    <p class="explain" hidden>Отдельный <code>INSERT</code> здесь ничего не нарушает — нарушает комбинация чтений и записей двух транзакций. Пока вторая не дошла до <code>COMMIT</code>, у базы нет права её убивать: она ещё могла бы откатиться сама. Практический вывод для кода: ретраем надо оборачивать <strong>блок вместе с <code>COMMIT</code></strong>, а не только запросы. Ошибка прилетит из последней строчки, которую ты меньше всего ожидаешь.</p>
+  </div>
+
+  <h2>Цена</h2>
+
+  <p><code>SERIALIZABLE</code> выглядит как «включи и забудь», и именно поэтому важно знать, чем ты платишь.</p>
+
+  <table>
+    <tr><th>Платишь</th><th>Чем именно</th></tr>
+    <tr>
+      <td>Ретраями</td>
+      <td>Документация прямо требует: приложение на этом уровне <strong>обязано</strong> уметь повторять транзакции. Причём предсказать, какая именно упадёт, нельзя — нужен общий механизм на все <code>40001</code><sup>3</sup></td>
+    </tr>
+    <tr>
+      <td>Зависимостью от плана</td>
+      <td>Sequential scan <strong>всегда</strong> берёт predicate lock на всю таблицу — и частота отказов подскакивает. Один и тот же код на 100 строках и на 100 000 даёт разное поведение, потому что планировщик выбрал другой план<sup>2</sup></td>
+    </tr>
+    <tr>
+      <td>Памятью на locks</td>
+      <td>Мелкие predicate locks сливаются в крупные, когда память под них кончается. Крупнее lock → больше ложных конфликтов. Лечится настройками <code>max_pred_locks_per_*</code><sup>2</sup></td>
+    </tr>
+    <tr>
+      <td>Дисциплиной транзакций</td>
+      <td>Короткие транзакции, ничего лишнего внутри, никаких «idle in transaction», read-only помечать как <code>READ ONLY</code>. Длинная транзакция на <code>SERIALIZABLE</code> дороже, чем на любом другом уровне<sup>3</sup></td>
+    </tr>
+  </table>
+
+  <div class="callout win">
+    <span class="label">Зато</span>
+    <p>SSI никогда не ждёт и не создаёт дедлоков — он детектит, а не блокирует. Поэтому индекс на <code>buyer_id</code> в нашем полигоне стоял не случайно: он сужает predicate lock с «вся таблица» до «строки этого покупателя». Наблюдаемость решения здесь буквально одна: <code>EXPLAIN</code> показывает план, план определяет гранулярность lock, гранулярность определяет частоту <code>40001</code>. Это связка между M8 и M4, и на собеседовании она звучит очень хорошо.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Проверь себя</span>
+    <p class="q">Почему <code>SERIALIZABLE</code> нельзя просто включить глобально и забыть?</p>
+    <div class="options">
+      <button>Он не защищает от phantom read при вставке новых строк в диапазон</button>
+      <button>Он требует явного <code>FOR UPDATE</code> на каждой читаемой в транзакции строке</button>
+      <button data-correct>Он перекладывает на код обязанность корректно повторять транзакции</button>
+      <button>Он превращает все конфликты в дедлоки и удваивает время ожидания</button>
+    </div>
+    <p class="explain" hidden>Уровень изоляции — это контракт из двух половин. База обещает не допустить аномалию, приложение обещает пережить <code>40001</code>. Включить уровень и не написать ретрай — значит обменять тихую порчу данных на громкие пятисотки. Ровно та же мысль, что в уроке 0002, но цена выше: под SSI падать может почти любая транзакция, а не только та, что лезла в горячую строку.</p>
+  </div>
+
+  <h2>Три способа закрыть write skew</h2>
+
+  <table>
+    <tr><th>Способ</th><th>Как работает</th><th>Цена</th></tr>
+    <tr>
+      <td><code>SERIALIZABLE</code></td>
+      <td>База сама расширяет понятие конфликта до прочитанных диапазонов</td>
+      <td>Ретраи, зависимость от плана запроса, дисциплина коротких транзакций</td>
+    </tr>
+    <tr>
+      <td>Блокировка общей строки</td>
+      <td><code>SELECT ... FROM buyer WHERE id = 1 FOR UPDATE</code> перед проверкой: правило между строками превращается в очередь на одной</td>
+      <td>Ручная дисциплина: забыл взять lock в одном эндпоинте — дыра вернулась. Порядок захвата, дедлоки</td>
+    </tr>
+    <tr>
+      <td>Материализованный счётчик</td>
+      <td>Количество становится колонкой, правило — <code>CHECK</code>. Конфликт схлопывается в конфликт по одной строке, и его замечает даже <code>Read Committed</code></td>
+      <td>Денормализация: счётчик обязан меняться в той же транзакции, иначе разъедется с фактом. Число лимита переезжает в схему — менять его теперь миграцией</td>
+    </tr>
+  </table>
+
+  <p>Третий способ в DDIA называется <em>materializing conflicts</em>: если базе не за что зацепиться, создай ей эту зацепку сам. Обрати внимание, что только он даёт <strong>constraint</strong> — то есть работает и против запроса, который напишет кто-то другой через год, не зная про правило. Первые два защищают только тот код, который их применил.</p>
+
+  <h2>И это тот же вопрос, что граница агрегата</h2>
+
+  <p>Взгляни на список выше ещё раз. Он весь про одно: правило существует между несколькими строками, и у тебя два хода — либо <strong>расширить транзакцию</strong> так, чтобы она это правило удерживала (способы 1 и 2), либо <strong>сжать правило в одну строку</strong> (способ 3).</p>
+
+  <p>Это в точности выбор границы агрегата из <code>M1-13</code>, только увиденный с другой стороны. «Покупатель со своим лимитом VIP-мест» — один агрегат или два независимых Hold? Ответив «один», ты получаешь строку-счётчик и constraint. Ответив «два», ты обязан защищать инвариант между ними — то есть платить <code>SERIALIZABLE</code> или ручной блокировкой. Граница агрегата = граница транзакции = граница блокировки, и <strong>ни один из ответов не бесплатный</strong>. Это и есть то, что должно быть написано в ADR по <code>M4-07</code>.</p>
+
+  <h2>Задание</h2>
+
+  <ol class="steps">
+    <li>Пройди опыт 1 и опыт 2 руками. В опыте 2 прочитай <code>DETAIL</code> и скажи мне своими словами, каким словом база назвала транзакцию B и почему именно её, а не A.</li>
+    <li>Внутри открытой транзакции на <code>SERIALIZABLE</code> (после <code>SELECT</code>, до <code>COMMIT</code>) посмотри из третьего терминала: <code>SELECT locktype, relation::regclass, mode FROM pg_locks WHERE mode = 'SIReadLock';</code> Ты увидишь predicate lock своими глазами. Потом убери индекс <code>vip_hold_buyer_idx</code>, повтори — и сравни, что изменилось в <code>locktype</code>.</li>
+    <li><strong>Главное.</strong> Реализуй третий способ сам: добавь материализованный счётчик с <code>CHECK</code> и докажи, что на обычном <code>Read Committed</code> без единого <code>FOR UPDATE</code> третье место вставить невозможно. Пришли мне SQL и код ошибки, который получил. Подсказка одна: подумай, почему <code>UPDATE ... SET used = used + 1</code> ведёт себя не так, как «прочитал, посчитал в приложении, записал».</li>
+    <li>Назови цену своего решения из пункта 3 тремя пунктами: что станет медленнее, что может разъехаться, и что придётся делать при изменении лимита с двух мест на три.</li>
+    <li><code>docker rm -f tix-lab</code>.</li>
+  </ol>
+
+  <div class="footer">
+    <h2 id="src">Первоисточники</h2>
+    <ul>
+      <li><strong>Читать в первую очередь:</strong> <a href="https://www.postgresql.org/docs/current/transaction-iso.html">PostgreSQL Docs — 13.2. Transaction Isolation</a>, раздел 13.2.3 (Serializable). Две страницы, и там всё: механика SSI, predicate locks и список рекомендаций по производительности.</li>
+      <li><sup>1</sup> Там же: «applications using this level must be prepared to retry transactions due to serialization failures».</li>
+      <li><sup>2</sup> Там же: «A sequential scan will always necessitate a relation-level predicate lock… This can result in an increased rate of serialization failures»; predicate locks видны в <a href="https://www.postgresql.org/docs/current/view-pg-locks.html">pg_locks</a> как <code>SIReadLock</code>.</li>
+      <li><sup>3</sup> Там же, список рекомендаций: <code>READ ONLY</code> где можно, пул соединений, ничего лишнего в транзакции, <code>idle_in_transaction_session_timeout</code>, и «it is important that an environment which uses this technique have a generalized way of handling serialization failures».</li>
+      <li>Глубже: Kleppmann, <a href="https://www.dataintensive.net/">DDIA</a>, глава 7 — «Write Skew and Phantoms» и «Materializing conflicts». Там же разбор классического примера с дежурными врачами, который устроен ровно как наши VIP-места.</li>
+    </ul>
+
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="./0002-wait-or-retry.html">Урок 0002 — Ждать или падать</a></li>
+      <li><a href="./0001-race-for-the-last-ticket.html">Урок 0001 — Гонка за последним билетом</a></li>
+      <li><a href="../reference/postgres-concurrency.html#skew">Reference — PostgreSQL: конкурентность</a>, блок про write skew</li>
+      <li><a href="../GLOSSARY.md">Словарь</a> — <code>write skew</code> и <code>predicate lock</code> уедут туда, когда ты сдашь пункт 3</li>
+    </ul>
+
+    <div class="ask">
+      Жду пункты 1, 3 и 4. Пункт 4 для меня важнее пункта 3: написать <code>CHECK</code> — навык на один вечер, а назвать цену решения до того, как её назовёт ревьюер, — навык на всю карьеру. Если по ходу застрянешь или получишь не ту ошибку, которую ждал, — спрашивай, я для этого здесь.
+    </div>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

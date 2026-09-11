@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference — DDD: тактические паттерны</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Reference · шпаргалка</p>
+  <h1>DDD: тактические паттерны</h1>
+  <p class="standfirst">Что чем является в этом проекте и как отличить настоящий агрегат от папки с классами.</p>
+  <div class="meta">
+    <span>Обновлено 2026-09-10</span>
+    <span>Решение: <a href="../docs/adr/0001-ddd-only-where-invariants-are.md">ADR-0001</a></span>
+    <span>Карта домена: <a href="../CONTEXT.md">CONTEXT.md</a></span>
+  </div>
+
+  <h2>Правило входа</h2>
+
+  <div class="callout warn">
+    <span class="label">Когда заводить агрегат</span>
+    <p>Агрегат нужен тогда и только тогда, когда есть <strong>инвариант</strong> — правило, которое обязано выполняться при каждой записи. Нет инварианта — нет агрегата, пиши обычный CRUD. «У сущности много полей» — не инвариант. «Это важная таблица» — не инвариант.</p>
+  </div>
+
+  <h2>Словарь</h2>
+
+  <table>
+    <tr><th>Понятие</th><th>Определение</th><th>Признак, что это оно</th></tr>
+    <tr>
+      <td><strong>Entity</strong></td>
+      <td>Объект с идентичностью, которая переживает изменение полей</td>
+      <td>Два объекта с одинаковыми полями, но разными id — разные</td>
+    </tr>
+    <tr>
+      <td><strong>Value Object</strong></td>
+      <td>Неизменяемый объект без id, сравнивается по значению</td>
+      <td><code>Money(100, 'UAH')</code> равен любому другому <code>Money(100, 'UAH')</code></td>
+    </tr>
+    <tr>
+      <td><strong>Aggregate</strong></td>
+      <td>Кластер объектов, меняющийся как одно целое ради инварианта</td>
+      <td>Есть правило, которое нельзя проверить, глядя на один объект</td>
+    </tr>
+    <tr>
+      <td><strong>Aggregate Root</strong></td>
+      <td>Единственная дверь внутрь агрегата</td>
+      <td>Снаружи ничего внутри агрегата не достижимо, кроме как через root</td>
+    </tr>
+    <tr>
+      <td><strong>Repository</strong></td>
+      <td>Коллекция агрегатов; сохраняет и достаёт <em>целиком</em></td>
+      <td>Один репозиторий на агрегат, а не на таблицу</td>
+    </tr>
+    <tr>
+      <td><strong>Domain Event</strong></td>
+      <td>Факт, который уже случился внутри домена</td>
+      <td>Имя в прошедшем времени: <code>OrderPaid</code>, не <code>PayOrder</code></td>
+    </tr>
+    <tr>
+      <td><strong>Application Service</strong> <em>(use case)</em></td>
+      <td>Оркестровка одного сценария: транзакция, репозитории, публикация событий</td>
+      <td>Бизнес-правил внутри нет — они в агрегате</td>
+    </tr>
+  </table>
+
+  <h2>Три закона границы агрегата</h2>
+
+  <ol class="steps">
+    <li><strong>Агрегат должен быть маленьким.</strong> Его граница — это граница транзакции, а транзакция — это блокировка. Агрегат «Event со всеми местами» означает, что все покупатели концерта стоят в одной очереди.</li>
+    <li><strong>Ссылайся на другие агрегаты по id.</strong> Внутри <code>Hold</code> лежат <code>seatId</code>, а не объекты <code>Seat</code>. Иначе граница расплывается и в память тянется полстраницы базы.</li>
+    <li><strong>Одна транзакция — один агрегат.</strong> Правило по умолчанию. Отступать можно, но только через ADR с посчитанной ценой — как мы делаем в <code>M1-14</code>.</li>
+  </ol>
+
+  <h2>Агрегаты этого проекта</h2>
+
+  <table>
+    <tr><th>Агрегат</th><th>Инвариант</th><th>Чем подстрахован в БД</th></tr>
+    <tr><td><code>Seat</code></td><td>Не более одного активного Hold на место</td><td>Partial unique index</td></tr>
+    <tr><td><code>TicketAllocation</code></td><td><code>held + sold ≤ capacity</code></td><td><code>CHECK (available &gt;= 0)</code></td></tr>
+    <tr><td><code>Hold</code></td><td>Непустой; истёкший нельзя подтвердить</td><td><code>CHECK (expires_at &gt; created_at)</code></td></tr>
+    <tr><td><code>Order</code></td><td>Только разрешённые переходы; оплата один раз</td><td>Enum статуса + unique по ключу идемпотентности</td></tr>
+    <tr><td><code>Ticket</code></td><td>Гасится ровно один раз</td><td>Unique по <code>ticket_id</code> в таблице гашений</td></tr>
+  </table>
+
+  <div class="callout">
+    <span class="label">Два пояса, а не один</span>
+    <p>Агрегат даёт <strong>хороший UX</strong>: понятная ошибка, аккуратный <code>409</code>, осмысленное сообщение. Constraint даёт <strong>гарантию</strong>: он сработает даже для кода, который написан мимо домена. Агрегат без constraint — надежда на дисциплину. Constraint без агрегата — правило, размазанное по сервисам.</p>
+  </div>
+
+  <h2>Слои и направление зависимостей</h2>
+
+  <pre><code>api            → application → domain
+infrastructure → application → domain
+                               ↑
+                        никуда не зависит</code></pre>
+
+  <p><code>domain/</code> не импортирует NestJS, TypeORM, <code>pg</code>, Redis — ничего. Интерфейс репозитория (порт) объявлен в <code>domain/</code>, реализация живёт в <code>infrastructure/</code>. Проверяется линтером в <code>M1-15</code>, а не честным словом.</p>
+
+  <h2>Красные флаги на ревью</h2>
+
+  <table>
+    <tr><th>Симптом</th><th>Диагноз</th></tr>
+    <tr><td><code>order.status = 'paid'</code> снаружи агрегата</td><td>Anemic domain model: агрегат — мешок данных, правило ушло в сервис</td></tr>
+    <tr><td>В агрегате есть только геттеры и сеттеры</td><td>То же самое. Слой не окупается, лучше вернуть CRUD</td></tr>
+    <tr><td><code>import { Injectable } from '@nestjs/common'</code> в <code>domain/</code></td><td>Домен зависит от фреймворка — тестировать без Nest уже нельзя</td></tr>
+    <tr><td>Репозиторий отдаёт половину агрегата</td><td>Агрегат перестал быть целым; инвариант проверить нечем</td></tr>
+    <tr><td>Транзакция открывается внутри агрегата</td><td>Домен знает про БД. Транзакция — работа application layer</td></tr>
+    <tr><td>Агрегат загружается ради того, чтобы показать число</td><td>Чтение должно идти мимо домена, прямым запросом</td></tr>
+    <tr><td>Агрегат <code>Event</code> содержит все <code>Seat</code></td><td>Граница слишком крупная → в M4 это станет очередью</td></tr>
+  </table>
+
+  <h2>Money как эталон value object</h2>
+
+  <pre><code>// Плохо: правило можно нарушить, ошибку никто не заметит
+const total: number = price * qty;
+
+// Хорошо: невалидное состояние непредставимо
+const total: Money = price.multiply(Quantity.of(qty));
+// Money.add(Money) с другой валютой — бросает исключение
+// Money хранится как integer в минимальных единицах, не float
+</code></pre>
+
+  <div class="footer">
+    <h2>Источники</h2>
+    <ul>
+      <li><a href="https://martinfowler.com/bliki/DDD_Aggregate.html">DDD_Aggregate — Martin Fowler</a></li>
+      <li><a href="https://www.dddcommunity.org/library/vernon_2011/">Effective Aggregate Design — Vaughn Vernon</a> (три части, PDF)</li>
+      <li><a href="https://martinfowler.com/bliki/AnemicDomainModel.html">AnemicDomainModel — Martin Fowler</a></li>
+      <li><a href="https://www.domainlanguage.com/ddd/reference/">Domain-Driven Design Reference — Eric Evans</a> (бесплатный PDF)</li>
+    </ul>
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="./postgres-concurrency.html">Reference — PostgreSQL: конкурентность</a></li>
+      <li><a href="../CONTEXT.md">Карта агрегатов и инвариантов</a> · <a href="../ROADMAP.md">План, этапы M1 и M4</a></li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>

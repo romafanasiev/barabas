@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Урок 0001 — Гонка за последним билетом</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Урок 0001 · этап M4 · конкурентность</p>
+  <h1>Гонка за последним билетом</h1>
+  <p class="standfirst">Твой код проверил, что место свободно. Через две миллисекунды его проверил кто-то ещё. Оба получили «свободно».</p>
+  <div class="meta">
+    <span>≈ 25 минут</span>
+    <span>Нужен: Docker</span>
+    <span>Ведёт к issue M4-05</span>
+  </div>
+
+  <p>На фронтенде состояние живёт в одной вкладке одного пользователя. Ты — единственный, кто его меняет. Весь бекенд отличается от этого одним фактом: <strong>твой код выполняется много раз одновременно, и все копии лезут в одни и те же данные</strong>.</p>
+
+  <p>Пока нагрузки нет, это незаметно. Ты пишешь то, что писал всегда:</p>
+
+  <p class="filename">tickets.service.ts — так писать нельзя</p>
+  <pre><code>const inv = await repo.findOne({ ticketTypeId });
+
+if (inv.available &lt; 1) {
+  throw new ConflictException('sold out');
+}
+
+await repo.update({ ticketTypeId }, { available: inv.available - 1 });
+return issueTicket();</code></pre>
+
+  <p>Читается безупречно. И именно этот код продаёт последнее место двум людям. Сейчас ты увидишь это своими глазами — не на схеме, а в двух терминалах.</p>
+
+  <h2>Поднимаем полигон</h2>
+
+  <p>Настоящий PostgreSQL на пять минут, на порту 5433, чтобы ничего не задеть:</p>
+
+  <pre><code>docker run --rm -d --name tix-lab \
+  -e POSTGRES_PASSWORD=lab -p 5433:5432 postgres:18</code></pre>
+
+  <p>Создаём остаток ровно в один билет:</p>
+
+  <pre><code>docker exec -i tix-lab psql -U postgres &lt;&lt;'SQL'
+CREATE TABLE inventory (
+  ticket_type_id int PRIMARY KEY,
+  available      int NOT NULL
+);
+INSERT INTO inventory VALUES (1, 1);
+SQL</code></pre>
+
+  <p>Теперь открой <strong>два терминала</strong>. В каждом:</p>
+
+  <pre><code>docker exec -it tix-lab psql -U postgres</code></pre>
+
+  <p>Это два одновременных запроса к твоему API. Терминал <strong>A</strong> — Аня, терминал <strong>B</strong> — Борис. Оба хотят последний билет.</p>
+
+  <h2>Воспроизводим овербукинг</h2>
+
+  <p>Выполняй строго по шагам, переключаясь между терминалами. Не спеши — весь смысл в порядке.</p>
+
+  <div class="terminals">
+    <div>
+      <p class="filename">Терминал A · Аня</p>
+<pre><code>-- шаг 1
+BEGIN;
+SELECT available
+  FROM inventory
+ WHERE ticket_type_id = 1;
+-- available = 1
+-- "свободно, продаём"
+
+
+
+
+-- шаг 3
+UPDATE inventory
+   SET available = 0
+ WHERE ticket_type_id = 1;
+COMMIT;
+-- продали Ане</code></pre>
+    </div>
+    <div>
+      <p class="filename">Терминал B · Борис</p>
+<pre><code>
+
+
+
+-- шаг 2
+BEGIN;
+SELECT available
+  FROM inventory
+ WHERE ticket_type_id = 1;
+-- available = 1
+-- "свободно, продаём"
+
+-- шаг 4
+UPDATE inventory
+   SET available = 0
+ WHERE ticket_type_id = 1;
+COMMIT;
+-- продали Борису</code></pre>
+    </div>
+  </div>
+
+  <p>Проверь итог:</p>
+
+  <pre><code>SELECT available FROM inventory WHERE ticket_type_id = 1;
+--  available
+-- -----------
+--          0</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Что только что произошло</span>
+    <p>Остаток честно равен нулю. Ошибок не было. Транзакции не откатились. И <strong>два человека едут на концерт с билетами на одно кресло</strong>. Ты не увидишь этого ни в логах, ни в мониторинге — узнаешь на входе, от охраны.</p>
+  </div>
+
+  <p>Это классическая аномалия, у неё есть имя: <strong>lost update</strong>. Обновление Ани потерялось — Борис затёр его, приняв решение по устаревшему прочтению.</p>
+
+  <h2>Почему база это допустила</h2>
+
+  <p>По умолчанию PostgreSQL работает на уровне изоляции <strong>Read Committed</strong>. Он даёт ровно одну гарантию: ты никогда не увидишь незакоммиченные чужие данные. Он <em>не</em> обещает, что данные не изменятся между твоим <code>SELECT</code> и твоим <code>UPDATE</code>.<a href="#src">¹</a></p>
+
+  <p>А между ними — пропасть. Вот она:</p>
+
+  <table>
+    <tr><th>Момент</th><th>Что происходит</th></tr>
+    <tr><td>t₀</td><td>A читает <code>available = 1</code></td></tr>
+    <tr><td>t₁</td><td>B читает <code>available = 1</code> — и он прав, ещё никто ничего не изменил</td></tr>
+    <tr><td>t₂</td><td>A принимает решение в <strong>приложении</strong>, на основе данных из t₀</td></tr>
+    <tr><td>t₃</td><td>B принимает решение в приложении, на основе данных из t₁</td></tr>
+    <tr><td>t₄</td><td>Оба пишут. Оба «правы». Билетов продано два.</td></tr>
+  </table>
+
+  <p>Ключевая мысль, которую стоит унести из этого урока целиком:</p>
+
+  <blockquote>Решение, принятое в коде приложения по прочитанным данным, действительно ровно до момента, пока эти данные не защищены блокировкой или constraint. Секунду спустя оно уже ничего не значит.</blockquote>
+
+  <div class="quiz">
+    <span class="label">Проверь себя</span>
+    <p class="q">Почему <code>BEGIN</code> вокруг обоих запросов не спас от овербукинга?</p>
+    <div class="options">
+      <button>Транзакция была открыта слишком поздно по времени</button>
+      <button data-correct>Транзакция даёт атомарность записи, но не блокирует чтение</button>
+      <button>Обе транзакции успели выполнить commit до чтения строки</button>
+      <button>PostgreSQL снимает блокировку строки сразу после чтения</button>
+    </div>
+    <p class="explain" hidden>Транзакция гарантирует «всё или ничего» для <em>твоих</em> изменений. Она ничего не говорит о том, что параллельная транзакция не прочитает и не изменит ту же строку. Обычный <code>SELECT</code> в Read Committed не берёт никакой блокировки — строка остаётся свободной для всех.</p>
+  </div>
+
+  <h2>Починка №1: заблокировать строку при чтении</h2>
+
+  <p>Скажем базе, что мы читаем <em>с намерением изменить</em>. Тогда вторая транзакция будет вынуждена подождать.<a href="#src">²</a></p>
+
+  <p>Верни остаток в единицу и повтори тот же танец, добавив три слова:</p>
+
+  <pre><code>UPDATE inventory SET available = 1 WHERE ticket_type_id = 1;</code></pre>
+
+  <div class="terminals">
+    <div>
+      <p class="filename">Терминал A · Аня</p>
+<pre><code>-- шаг 1
+BEGIN;
+SELECT available
+  FROM inventory
+ WHERE ticket_type_id = 1
+   FOR UPDATE;      -- ← блокировка
+-- available = 1
+
+
+
+-- шаг 3
+UPDATE inventory
+   SET available = 0
+ WHERE ticket_type_id = 1;
+COMMIT;</code></pre>
+    </div>
+    <div>
+      <p class="filename">Терминал B · Борис</p>
+<pre><code>
+
+
+-- шаг 2
+BEGIN;
+SELECT available
+  FROM inventory
+ WHERE ticket_type_id = 1
+   FOR UPDATE;
+-- ⏳ ВИСИТ. Ждёт commit от A.
+
+-- шаг 4 (после commit A)
+-- available = 0
+-- "мест нет" → 409
+ROLLBACK;</code></pre>
+    </div>
+  </div>
+
+  <div class="callout win">
+    <span class="label">Вот он, момент</span>
+    <p>Терминал B <strong>завис</strong> на шаге 2. Это не баг — это ровно та секунда, которую база выкупила у гонки. Когда A закоммитил, B перечитал строку и увидел честный ноль. Один билет — один покупатель.</p>
+  </div>
+
+  <p>Цена у этого есть, и её надо знать заранее: пока A держит блокировку, все остальные стоят в очереди. Держать транзакцию открытой во время похода в платёжный шлюз — способ уронить прод. В M4 мы разберём это подробно.</p>
+
+  <h2>Починка №2: та, которой ты доверяешь по-настоящему</h2>
+
+  <p>Блокировку можно забыть поставить. В новом эндпоинте, в скрипте миграции, в чужом pull request. Поэтому последний рубеж ставится не в коде, а в схеме:</p>
+
+  <pre><code>ALTER TABLE inventory
+  ADD CONSTRAINT available_non_negative CHECK (available &gt;= 0);</code></pre>
+
+  <p>И тогда само списание становится одним атомарным выражением — без чтения, без решения в приложении, без окна для гонки:</p>
+
+  <pre><code>UPDATE inventory
+   SET available = available - 1
+ WHERE ticket_type_id = 1
+   AND available &gt; 0;
+-- UPDATE 1  → продано
+-- UPDATE 0  → мест нет, отдаём 409</code></pre>
+
+  <p>Здесь чтение и запись — одна операция, и база сама держит блокировку на время выполнения <code>UPDATE</code>. А <code>CHECK</code> стоит за ними и ловит любой будущий код, который попытается уйти в минус. Даже если этот код напишешь не ты.</p>
+
+  <div class="quiz">
+    <span class="label">Проверь себя</span>
+    <p class="q">Зачем нужен <code>CHECK (available >= 0)</code>, если <code>UPDATE</code> уже проверяет <code>available > 0</code>?</p>
+    <div class="options">
+      <button>Он ускоряет запрос, подсказывая планировщику диапазон значений</button>
+      <button>Он заменяет блокировку строки и снимает ожидание в очереди</button>
+      <button data-correct>Он защищает данные от любого кода, забывшего сделать проверку</button>
+      <button>Он откатывает транзакцию быстрее, чем это делает приложение</button>
+    </div>
+    <p class="explain" hidden>Constraint — единственная гарантия, которая не зависит от дисциплины разработчика. Условие в <code>WHERE</code> живёт в одном запросе; <code>CHECK</code> живёт в схеме и действует на все запросы, включая те, что напишут через полгода. Правило: <strong>инварианты предметной области выражай в схеме, а не только в сервисе</strong>.</p>
+  </div>
+
+  <h2>Задание</h2>
+
+  <ol class="steps">
+    <li>Воспроизведи овербукинг из первой части. Ты должен увидеть <code>available = 0</code> при двух проданных билетах — своими глазами, а не поверить на слово.</li>
+    <li>Повтори с <code>FOR UPDATE</code> и поймай момент, когда терминал B висит. Обрати внимание на ощущение: именно так выглядит корректность.</li>
+    <li>Поставь <code>CHECK</code>, затем попробуй руками уйти в минус: <code>UPDATE inventory SET available = -1 WHERE ticket_type_id = 1;</code> — и прочитай текст ошибки внимательно.</li>
+    <li>Теперь эксперимент, который я не объяснял. Верни <code>available = 1</code> и повтори <em>первый</em> сценарий (без <code>FOR UPDATE</code>), но открой обе транзакции так: <code>BEGIN ISOLATION LEVEL REPEATABLE READ;</code>. Что произойдёт у Бориса на шаге 4? Ответ принеси мне — обсудим.</li>
+    <li>Прибери за собой: <code>docker rm -f tix-lab</code>.</li>
+  </ol>
+
+  <div class="callout">
+    <span class="label">Куда это ведёт</span>
+    <p>Issue <code>M4-05</code> в <a href="../ROADMAP.md">плане</a> звучит так: «50 параллельных запросов на 1 место → ровно 1 успех, 49 отказов». Сегодня ты сделал это руками в двух терминалах. Там ты сделаешь то же самое кодом — и превратишь в тест, который больше никогда не даст этому багу вернуться.</p>
+  </div>
+
+  <div class="footer">
+    <h2 id="src">Первоисточники</h2>
+    <ul>
+      <li><strong>Читать в первую очередь:</strong> <a href="https://www.postgresql.org/docs/current/transaction-iso.html">PostgreSQL Docs — 13.2. Transaction Isolation</a>. Раздел 13.2.1 (Read Committed) — там дословно описано окно между <code>SELECT</code> и <code>UPDATE</code>, которое ты сегодня поймал. Двадцать минут чтения, которые окупятся всем этапом M4.</li>
+      <li>¹ ² <a href="https://www.postgresql.org/docs/current/explicit-locking.html">PostgreSQL Docs — 13.3. Explicit Locking</a> — раздел 13.3.2 про row-level locks и что именно делает <code>FOR UPDATE</code>.</li>
+      <li>Глубже: Martin Kleppmann, <a href="https://www.dataintensive.net/">Designing Data-Intensive Applications</a>, глава 7 — раздел «Preventing Lost Updates».</li>
+    </ul>
+
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="../reference/postgres-concurrency.html">Reference — PostgreSQL: конкурентность (шпаргалка)</a></li>
+      <li><a href="../ROADMAP.md">Учебный план</a> · <a href="../CONTEXT.md">Словарь домена</a> · <a href="../MISSION.md">Миссия</a></li>
+    </ul>
+
+    <div class="ask">
+      <strong>Застрял или что-то не сходится — спроси меня.</strong> Я твой преподаватель в этом проекте: разберу вывод <code>psql</code>, объясню чужой ответ со Stack Overflow, придумаю ещё один эксперимент. Особенно жду твой ответ по шагу 4 — там прячется следующий урок.
+    </div>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

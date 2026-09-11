@@ -1,0 +1,70 @@
+/* Reusable retrieval-practice widget. Pairs with assets/quiz.js. */
+
+.quiz {
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  background: var(--paper-sunk);
+  padding: 1.1rem 1.15rem 1rem;
+  margin: 0 0 1.5rem;
+}
+
+.quiz > .label {
+  font-family: var(--sans);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  display: block;
+  margin-bottom: 0.55rem;
+}
+
+.quiz .q {
+  font-size: 1rem;
+  margin: 0 0 0.85rem;
+}
+
+.quiz .options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.quiz button {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-align: left;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.quiz button:hover:not([disabled]) { border-color: var(--ink-faint); }
+.quiz button[disabled] { cursor: default; }
+
+.quiz button.is-correct {
+  background: var(--good-soft);
+  border-color: var(--good);
+  color: var(--good);
+  font-weight: 600;
+}
+.quiz button.is-wrong {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  text-decoration: line-through;
+}
+
+.quiz .explain {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  margin: 0.85rem 0 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+}

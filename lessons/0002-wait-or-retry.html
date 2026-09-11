@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Урок 0002 — Ждать или падать</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Урок 0002 · этап M4 · конкурентность</p>
+  <h1>Ждать или падать</h1>
+  <p class="standfirst">Ты нашёл второй способ не продать место дважды. Теперь надо выбрать между ними — и заплатить за выбор.</p>
+  <div class="meta">
+    <span>≈ 20 минут</span>
+    <span>Продолжение <a href="./0001-race-for-the-last-ticket.html">урока 0001</a></span>
+    <span>Ведёт к M4-07, M4-08</span>
+  </div>
+
+  <h2>Сначала вспомни</h2>
+
+  <p>Без подглядывания в прошлый урок.</p>
+
+  <div class="quiz">
+    <span class="label">Recall · 1 из 2</span>
+    <p class="q">Что именно делает <code>SELECT ... FOR UPDATE</code> со второй транзакцией?</p>
+    <div class="options">
+      <button>Отменяет её транзакцию и возвращает ошибку конфликта</button>
+      <button data-correct>Заставляет её ждать, пока первая не завершит работу</button>
+      <button>Позволяет ей прочитать последнее закоммиченное значение</button>
+      <button>Копирует ей снимок строки на момент начала транзакции</button>
+    </div>
+    <p class="explain" hidden>Блокировка — это ожидание. Вторая транзакция висит до <code>COMMIT</code> или <code>ROLLBACK</code> первой, потом перечитывает строку уже в новом состоянии.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Recall · 2 из 2</span>
+    <p class="q">Почему <code>CHECK</code> надёжнее условия <code>WHERE available &gt; 0</code>?</p>
+    <div class="options">
+      <button>Он выполняется раньше и потому успевает перехватить запись</button>
+      <button data-correct>Он действует на все запросы, включая ещё не написанные</button>
+      <button>Он блокирует строку на всё время выполнения транзакции</button>
+      <button>Он повторяет проверку автоматически при каждом конфликте</button>
+    </div>
+    <p class="explain" hidden>Условие в <code>WHERE</code> живёт ровно в одном запросе. <code>CHECK</code> живёт в схеме и не зависит от того, вспомнил ли автор следующего эндпоинта про инвариант.</p>
+  </div>
+
+  <h2>Что ты нашёл</h2>
+
+  <p>Ты открыл обе транзакции на <code>REPEATABLE READ</code>, повторил сценарий без всякой блокировки — и получил:</p>
+
+  <pre><code>ERROR:  could not serialize access due to concurrent update</code></pre>
+
+  <p>Код ошибки — <code>40001</code>, имя — <code>serialization_failure</code>. Овербукинга не случилось. И заметь: <strong>ты не просил никакой блокировки</strong>. База отказала сама.</p>
+
+  <p>Механика такая. На <code>REPEATABLE READ</code> транзакция Бориса работает со снимком данных, сделанным в момент её начала. Когда её <code>UPDATE</code> добирается до строки, которую Аня успела изменить и закоммитить, у базы есть ровно два выхода: перечитать строку — но это разрушит снимок, ради которого уровень и выбран, — либо сдаться. PostgreSQL сдаётся. Правило называется <strong>first-updater-wins</strong>: кто закоммитил первым, тот и прав, второй аварийно завершается.<a href="#src">¹</a></p>
+
+  <div class="callout warn">
+    <span class="label">Ровно та же ситуация, три разных исхода</span>
+    <p><strong>Read Committed без блокировки</strong> — тишина и испорченные данные.<br>
+    <strong>Read Committed с <code>FOR UPDATE</code></strong> — ожидание, потом честный отказ.<br>
+    <strong>Repeatable Read</strong> — громкая ошибка <code>40001</code>.</p>
+    <p>Из трёх исходов опасен именно первый: он единственный не оставляет следов.</p>
+  </div>
+
+  <h2>Цена, которую ты только что купил</h2>
+
+  <p>Ошибка вместо тихой порчи данных — это улучшение. Но обрати внимание, что произошло с точки зрения покупателя: <strong>Борис получил пятисотку</strong>. Не «мест нет», а «что-то сломалось». Между тем место, возможно, было — просто в этот момент его трогал кто-то другой.</p>
+
+  <p>Значит, выбрав этот уровень изоляции, ты обязан написать ретрай. Не «хорошо бы», а обязан: <code>40001</code> — это часть контракта уровня, а не поломка.</p>
+
+  <div class="callout">
+    <span class="label">Главная ошибка на этом месте</span>
+    <p>Повторять надо <strong>всю транзакцию с самого <code>BEGIN</code></strong>, а не упавший запрос. После <code>40001</code> транзакция мертва: любая следующая команда в ней вернёт <code>current transaction is aborted</code>. И это правильно — снимок данных, на котором она строила решения, уже недействителен. Нужен новый <code>BEGIN</code>, новое чтение, новое решение.</p>
+  </div>
+
+  <h2>Проверь руками</h2>
+
+  <p>Подними полигон, если убрал, и верни остаток в единицу:</p>
+
+  <pre><code>docker run --rm -d --name tix-lab -e POSTGRES_PASSWORD=lab -p 5433:5432 postgres:18
+docker exec -i tix-lab psql -U postgres &lt;&lt;'SQL'
+CREATE TABLE IF NOT EXISTS inventory (ticket_type_id int PRIMARY KEY, available int NOT NULL);
+INSERT INTO inventory VALUES (1, 1) ON CONFLICT (ticket_type_id) DO UPDATE SET available = 1;
+SQL</code></pre>
+
+  <p>Повтори свой сценарий до ошибки, а потом — в том же терминале B — сделай то, что сделал бы ретрай:</p>
+
+  <div class="terminals">
+    <div>
+      <p class="filename">Терминал B · после 40001</p>
+<pre><code>-- транзакция мертва, проверь:
+SELECT 1;
+-- ERROR: current transaction
+--        is aborted
+
+ROLLBACK;
+
+-- ретрай = всё заново
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT available
+  FROM inventory
+ WHERE ticket_type_id = 1;
+-- available = 0
+-- честный отказ: "мест нет"
+COMMIT;</code></pre>
+    </div>
+    <div>
+      <p class="filename">Что здесь важно</p>
+<pre><code>1. Первая же команда после
+   40001 тоже падает.
+   Транзакция не «немного
+   сломана» — она мертва.
+
+2. ROLLBACK обязателен.
+
+3. Новый BEGIN делает новый
+   снимок. Только поэтому
+   Борис видит честный 0,
+   а не устаревшую 1.
+
+4. Ретрай вернул не билет,
+   а корректный ответ.
+   Это и есть успех.</code></pre>
+    </div>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Проверь себя</span>
+    <p class="q">Сколько раз имеет смысл повторять транзакцию, упавшую с <code>40001</code>?</p>
+    <div class="options">
+      <button>Бесконечно, пока конкурирующая транзакция не освободит строку</button>
+      <button data-correct>Ограниченное число раз, с растущей паузой и случайным разбросом</button>
+      <button>Ровно один раз, поскольку повторный конфликт означает дедлок</button>
+      <button>Столько раз, сколько активных транзакций работает с этой строкой</button>
+    </div>
+    <p class="explain" hidden>Бесконечный ретрай под нагрузкой превращается в самоподдерживающийся шторм: все повторяются одновременно и снова конфликтуют. Отсюда exponential backoff и jitter — случайный разброс, чтобы клиенты не синхронизировались. Предел попыток нужен, чтобы после него честно ответить <code>503</code>, а не висеть вечно.</p>
+  </div>
+
+  <h2>Так что выбрать</h2>
+
+  <table>
+    <tr><th>Механизм</th><th>Поведение под конфликтом</th><th>Что обязан написать</th><th>Когда брать</th></tr>
+    <tr>
+      <td><code>FOR UPDATE</code><br><em>pessimistic</em></td>
+      <td>Ждёт</td>
+      <td>Короткую транзакцию, порядок захвата</td>
+      <td>Конфликты частые: последние места на популярный концерт</td>
+    </tr>
+    <tr>
+      <td><code>REPEATABLE READ</code><br><em>optimistic</em></td>
+      <td>Падает с <code>40001</code></td>
+      <td>Ретрай с backoff и предел попыток</td>
+      <td>Конфликты редкие: правки каталога, профили</td>
+    </tr>
+    <tr>
+      <td><code>CHECK</code> / <code>UNIQUE</code></td>
+      <td>Падает с <code>23505</code> / <code>23514</code></td>
+      <td>Обработку кода ошибки</td>
+      <td>Всегда, как нижний пояс под любым из двух</td>
+    </tr>
+  </table>
+
+  <p>Это и есть содержание issue <code>M4-07</code>: выбрать механизм для брони мест и защитить выбор цифрами, а не вкусом. Замеры сделаешь в <code>M4-10</code>.</p>
+
+  <h2>Что <code>REPEATABLE READ</code> всё ещё не спасает</h2>
+
+  <p>Оба сценария выше трогали <strong>одну строку</strong>. Именно поэтому база смогла заметить конфликт.</p>
+
+  <p>Теперь представь правило: «один покупатель — не больше двух VIP-мест». Аня одновременно в двух вкладках берёт по одному VIP-месту. Обе транзакции считают её текущие места, обе видят «ноль», обе разрешают покупку, обе пишут <strong>в разные строки</strong>. Конфликта записи нет — базе не за что зацепиться. Правило нарушено, ошибки не будет.</p>
+
+  <p>Это <strong>write skew</strong>, и от него <code>REPEATABLE READ</code> не защищает. Нужен <code>SERIALIZABLE</code> — либо явная материализация правила в схеме. Об этом следующий урок по конкурентности.</p>
+
+  <h2>Задание</h2>
+
+  <ol class="steps">
+    <li>Пройди сценарий с ретраем выше. Убедись сам, что первая команда после <code>40001</code> тоже падает — это то, чего почти никто не ожидает.</li>
+    <li>Открой <a href="../reference/postgres-concurrency.html">шпаргалку по конкурентности</a> и найди там таблицу кодов ошибок. Пять кодов — те, что придётся обрабатывать в M4 и M5.</li>
+    <li>Своими словами ответь мне на один вопрос: <strong>для брони конкретного места на популярном концерте</strong> ты возьмёшь <code>FOR UPDATE</code> или <code>REPEATABLE READ</code> — и почему? Это черновик твоего ADR из <code>M4-07</code>, я его разберу.</li>
+    <li><code>docker rm -f tix-lab</code>.</li>
+  </ol>
+
+  <div class="footer">
+    <h2 id="src">Первоисточники</h2>
+    <ul>
+      <li><strong>Читать в первую очередь:</strong> <a href="https://www.postgresql.org/docs/current/transaction-iso.html">PostgreSQL Docs — 13.2. Transaction Isolation</a>, раздел 13.2.2 (Repeatable Read). Там дословно про first-updater-wins и про то, что приложение обязано повторять транзакцию.</li>
+      <li>¹ Там же — описание поведения <code>UPDATE</code> при конфликте снимков.</li>
+      <li>Глубже: Kleppmann, <a href="https://www.dataintensive.net/">DDIA</a>, глава 7 — разделы «Preventing Lost Updates» и «Write Skew and Phantoms». Второй понадобится к следующему уроку.</li>
+    </ul>
+
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="./0001-race-for-the-last-ticket.html">Урок 0001 — Гонка за последним билетом</a></li>
+      <li><a href="../reference/postgres-concurrency.html">Reference — PostgreSQL: конкурентность</a></li>
+      <li><a href="../GLOSSARY.md">Словарь</a> — туда уехали шесть терминов из этих двух уроков</li>
+    </ul>
+
+    <div class="ask">
+      <strong>Жду твой ответ по пункту 3.</strong> Он не про «правильный вариант» — оба варианта рабочие. Мне интересно, какими словами ты обоснуешь выбор: с этого начинается умение защищать архитектурное решение, а не просто писать код.
+    </div>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
