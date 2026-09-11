@@ -1,6 +1,6 @@
 # M0-03 — Конфигурация через env с валидацией на старте
 
-Status: needs-triage
+Status: resolved
 
 ## Задача
 
@@ -40,3 +40,350 @@ Node-процесс (zod). «Нужна в `.env`» и «должна быть �
 Отдельно: URL к базе не может иметь одного верного значения — изнутри контейнера это
 `postgres:5432`, с хоста `localhost:5433`. Решить, приложение получает готовый URL
 снаружи или собирает его из частей.
+
+### 2026-09-11 — ревью №1: возврат на доработку
+
+Проверено на рабочем дереве ветки `03-env`. Каркас правильный: zod-схема отдельно от
+парсера, `safeParse` с человекочитаемым перечислением проблем, типизированный `Env` через
+`z.infer`, доступ к конфигу через DI-токен, а не `process.env` по коду. Fail fast работает —
+процесс падает на `NestFactory.create`, до `listen`.
+
+Возврат по пяти пунктам.
+
+**Blocking 1. Приложение не стартует. У URL базы три разных имени.**
+
+```
+$ npx nest start
+ERROR [ExceptionHandler] Error: Некорректные переменные окружения:
+  POSTGRES_URL: Invalid input: expected string, received undefined
+```
+
+- `.env` и `.env.example` объявляют `POSTGRES_DATABASE_URL`
+- `env.schema.ts:12` требует `POSTGRES_URL`
+- `docker-compose.yml`, сервис `api`, передаёт `DATABASE_URL`
+
+Плюс `.env` вообще не читается: `config.module.ts:13` задаёт `envFilePath: '../../../../.env'`,
+а `@nestjs/config` резолвит этот путь от `process.cwd()`, то есть от `apps/server`. Получается
+`/Users/roma/Desktop/.env` — на два уровня выше репозитория:
+
+```
+$ ls -la apps/server/../../../../.env
+ls: ../../../../.env: No such file or directory
+```
+
+Сейчас приложение запускается только если переменную подложить в shell вручную — проверено,
+с `POSTGRES_URL=... npx nest start` старт проходит. Это значит, что `.env` из DoD не участвует
+в проверке ни разу.
+
+**Blocking 2. Дефолты у секретов.**
+
+`env.schema.ts:10,14` — `POSTGRES_PASS: z.string().default('postgres')`,
+`REDIS_PASS: z.string().default('redis')`. Это ровно тот случай, который в разделе «На что
+смотрю на ревью» описан как возврат. Дефолт у секрета означает, что забытая в проде переменная
+не уронит старт, а поднимет сервис со значением `postgres` — и узнаем мы об этом не из падения,
+а из чужого коннекта.
+
+**Blocking 3. Вопрос из комментария к M0-02 остался без ответа.**
+
+Комментарий просил разделить конфигурацию приложения и конфигурацию инфраструктуры. Сейчас
+разделения нет, и это видно по несостыковкам:
+
+- `POSTGRES_USER`, `POSTGRES_PASS`, `REDIS_PASS` лежат в схеме, но код их не читает: URL
+  приходит готовым. Схема проверяет то, без чего процесс прекрасно живёт.
+- `POSTGRES_NAME` есть в `.env` и в `docker-compose.yml`, но в схеме его нет — хотя по
+  логике «переменные базы» он из той же тройки.
+
+Нужно решение, записанное в самой схеме (комментарием или разбиением): что здесь обязательно
+для процесса Node, а что нужно только образам в Compose. И отдельно — второй вопрос
+комментария: приложение получает готовый URL снаружи или собирает его из частей. Из кода
+следует «готовый снаружи», и это нормальный ответ, но тогда `POSTGRES_USER`/`POSTGRES_PASS`
+в схеме приложения делать нечего.
+
+**Blocking 4. Тест не покрывает DoD.**
+
+`env.validation.spec.ts` — один кейс, и он не про то, что заявлено.
+
+- Название `отбивает секрет короче 32 символов`, а в теле `POSTGRES_URL: ''`. Никакого
+  секрета и никаких 32 символов в схеме нет.
+- DoD требует кейс «переменная **отсутствует**». Фикстура всегда отдаёт полный набор ключей,
+  а `''` — это невалидный формат, другая ветка.
+- DoD требует, чтобы в сообщении было видно, **какой именно** переменной не хватает.
+  `expect(act).toThrow()` без аргумента пройдёт на любой ошибке, включая `TypeError` из
+  опечатки в самом парсере.
+- Нет позитивного кейса: валидный env → `PORT` пришёл числом, а не строкой.
+
+И причина, по которой последний кейс сейчас невозможно написать:
+
+```ts
+export function makeRequiredRawEnv(overrides: Partial<Env> = {}): Env
+```
+
+Фикстура называется `Raw`, но типизирована как **результат** парсинга: `PORT: 3000` числом.
+Реальный `process.env` отдаёт `PORT: '3000'` строкой — то есть путь через `z.coerce` не
+проверяется ни одним тестом. А `Partial<Env>` в overrides запрещает написать
+`{ PORT: 'abc' }` — самый частый реальный сбой TypeScript просто не даст выразить. Объявленный
+рядом тип `RawEnv = Record<string, string>` не используется; похоже, он и был правильным
+намерением.
+
+**Blocking 5. Красный гейт.**
+
+```
+$ pnpm format:check
+[warn] src/app.module.ts
+[warn] src/config/config.module.ts
+[warn] src/config/env.schema.ts
+[warn] src/config/env.validation.spec.ts
+[warn] src/config/env.validation.ts
+[warn] utils/tests/fixtures/env.fixture.ts
+[warn] Code style issues found in 6 files.
+```
+
+`pnpm lint`, `pnpm typecheck`, `pnpm test` — зелёные.
+
+**Nitpick.**
+
+- `env.type.ts` — отдельный файл ради одной строки `z.infer`. Ему место в `env.schema.ts`,
+  рядом со схемой, из которой он выводится.
+- Сообщение об ошибке на русском. По CLAUDE.md на русском — объяснения и уроки; строки в
+  коде и логи стоит держать на английском, их будет читать grep и чужой дашборд.
+- `parseEnv` сделан generic, но вызывается один раз из `validateEnv`. Обобщение без второго
+  потребителя — пока лишний слой; вернуться к нему, когда появится вторая схема.
+- `app.module.ts:5` — `imports: [ AppConfigModule]`, лишний пробел (уйдёт вместе с Blocking 5).
+
+**Что проверить перед следующим ревью.** Удалить строку с URL из `.env`, запустить
+`pnpm dev` и убедиться, что процесс падает и называет именно эту переменную. Затем поднять
+`docker compose up` и убедиться, что внутри контейнера он стартует — это тот же сценарий с
+другим значением URL, и он сейчас сломан отдельно от локального.
+
+### 2026-09-11 — ревью №2: три из пяти закрыты
+
+**Закрыто.**
+
+- *Blocking 1, локальная половина.* `envFilePath: path.resolve(import.meta.dirname, '../../../../.env')`.
+  Проверено в трёх режимах: `npx nest start` из `apps/server` стартует с пустым shell-окружением
+  (значит `.env` действительно прочитан, а не подложен снаружи); `pnpm build` + `node apps/server/dist/main.js`
+  **из корня репозитория** тоже стартует — путь не зависит ни от cwd, ни от того, `src` это или `dist`.
+- *Blocking 2.* Дефолтов у секретов больше нет — `POSTGRES_PASS` и `REDIS_PASS` ушли из схемы целиком.
+- *Blocking 3.* Схема сократилась до `NODE_ENV`, `PORT`, `POSTGRES_URL` — то есть до того, без чего
+  процесс Node не работает. Всё остальное осталось инфраструктурой Compose. Это ответ на вопрос из
+  комментария к M0-02, и ответ правильный.
+- *Blocking 4, большая часть.* Пять кейсов вместо одного: валидный env, отсутствие переменной, пустая
+  строка, coercion `PORT: '8080'` → `8080`, подстановка дефолтов. Фикстура перетипизирована в
+  `RawEnv = Record<string, string>` — путь через `z.coerce` теперь настоящий, а не срезанный типом.
+- Дополнительно проверено: при невалидном значении процесс отдаёт `exit code 1` и падает до `listen`.
+
+```
+$ POSTGRES_URL='not-a-url' npx nest start; echo $?
+... ERROR [ExceptionHandler] Error: Некорректные переменные окружения:
+  POSTGRES_URL: Invalid URL
+1
+```
+
+**Blocking 1 (продолжение). Под Compose fail fast не срабатывает — и это хуже, чем падение.**
+
+`docker compose config` показывает, что реально приезжает в контейнер `api`:
+
+```
+POSTGRES_URL: postgres://<creds>@localhost:5433/old_poshta     <- из env_file, читает приложение
+DATABASE_URL: postgres://<creds>@postgres:5432/barabas         <- из environment, не читает никто
+```
+
+`env_file: .env` вносит в контейнер `POSTGRES_URL` с **хостовым** адресом. Изнутри контейнера
+`localhost:5433` — это сам контейнер `api`, базы там нет. Строка при этом валидный URL, поэтому
+схема пропускает её, приложение стартует «успешно», и упадёт оно в M1 на первом же запросе к базе.
+Отдельно видно, что и база разная: `old_poshta` против `barabas`.
+
+Правильно построенный URL лежит рядом в `DATABASE_URL` — имя, которого нет ни в схеме, ни в `.env`.
+Достаточно переименовать его в `docker-compose.yml` в `POSTGRES_URL`: ключ из `environment`
+перекрывает такой же ключ из `env_file`, и контейнер получит `postgres:5432`, а хост — свой
+`localhost:5433` из `.env`. Это и есть ответ на вторую половину вопроса из M0-02: у URL нет одного
+верного значения, поэтому его задаёт тот, кто запускает процесс.
+
+**Blocking 2. Тесты не проверяют, названа ли переменная.**
+
+DoD требует, чтобы приложение писало, **какой именно** переменной не хватает. Все три негативных
+кейса заканчиваются голым `expect(act).toThrow()`, который пройдёт на любой ошибке — включая
+`TypeError` из опечатки внутри самого `parseEnv`. Тест «отбивает отсутствие переменной» и тест
+«отбивает пустую строку» сейчас неразличимы: оба говорят только «что-то бросило».
+
+Проверять надо то, ради чего задача и делалась:
+
+```ts
+expect(act).toThrow(/POSTGRES_URL/);
+```
+
+Тогда мутация «убрать `issue.path` из сообщения» в `env.validation.ts:13` ломает тест, а сейчас — нет.
+
+**Blocking 3. `pnpm format:check` по-прежнему красный.**
+
+```
+[warn] src/app.module.ts
+[warn] src/config/config.module.ts
+[warn] src/config/env.schema.ts
+[warn] src/config/env.validation.spec.ts
+[warn] src/config/env.validation.ts
+[warn] utils/tests/fixtures/env.fixture.ts
+```
+
+`pnpm lint`, `pnpm typecheck`, `pnpm test` (5/5) — зелёные.
+
+**Nitpick.**
+
+- `describe('validateEnv: некорректные значения')` — внутри теперь два позитивных кейса. Либо
+  переименовать в `validateEnv`, либо разнести на два `describe`.
+- `валедирует` → `валидирует`. И в `отбивает oтсутствие` буква `o` всё ещё латинская.
+- `import path from 'path'` → `node:path`. Префикс отличает встроенный модуль от пакета `path`
+  из npm, который вполне может приехать транзитивно.
+- `env.type.ts` — отдельный файл ради одной строки `z.infer`.
+- Сообщение об ошибке на русском — логи стоит держать на английском.
+
+### 2026-09-11 — разбор возражения по Blocking 1 (Compose)
+
+Роман: «в компосе мы используем составную урлу из пароля и юзера, а `POSTGRES_URL` для
+приложения compose не использует в принципе».
+
+Первая половина верна: `grep POSTGRES_URL docker-compose.yml` пуст — compose нигде не
+интерполирует эту переменную. Но в контейнер она попадает не интерполяцией, а через
+`env_file: .env`, который отдаёт в окружение контейнера весь файл целиком, все семь ключей.
+Проверено на запущенном контейнере:
+
+```
+$ docker compose run --rm --no-deps --entrypoint sh api -c 'printenv POSTGRES_URL; printenv DATABASE_URL'
+postgres://<creds>@localhost:5433/old_poshta     <- читает приложение
+postgres://<creds>@postgres:5432/barabas         <- не читает никто
+
+$ docker compose run --rm --no-deps --entrypoint sh api -c 'node apps/server/dist/main.js'
+[Nest] LOG [NestApplication] Nest application successfully started
+
+$ grep -rn "DATABASE_URL" apps/server/src apps/server/utils
+(ничего)
+```
+
+**Решение:** переименовать в `docker-compose.yml` `DATABASE_URL` → `POSTGRES_URL` (вариант 1).
+Ключ из `environment` перекрывает одноимённый из `env_file`, поэтому контейнер получит
+`postgres:5432`, а локальный запуск — свой `localhost:5433` из `.env`.
+
+Побочно всплыло и осталось на потом: `env_file: .env` вносит в контейнер `api` вообще всё,
+включая `POSTGRES_PASS` и `REDIS_PASS`, которые приложению не нужны. Сузить список — отдельная
+задача гигиены, не блокирует M0-03.
+
+### 2026-09-11 — ревью №3: осталось два пункта
+
+**Закрыто.**
+
+*Compose.* Переименование сработало ровно так, как предполагалось — `environment` перекрыл
+одноимённый ключ из `env_file`. Проверено на обоих концах:
+
+```
+$ docker compose run --rm --no-deps --entrypoint sh api -c 'printenv POSTGRES_URL'
+postgres://<creds>@postgres:5432/barabas          <- контейнер
+
+$ npx nest start          # с хоста, .env -> localhost:5433
+[Nest] LOG [NestApplication] Nest application successfully started
+```
+
+Одно имя переменной, два значения, каждое верное для своего запускающего.
+
+*Тесты.* `toThrow(/POSTGRES_URL/)` — проверил, что ассерт действительно кусается. Убрал
+`issue.path` из сообщения в `env.validation.ts:13` (сообщение стало `(root): Invalid URL`):
+
+```
+Tests  2 failed | 3 passed (5)
+```
+
+До правки на этой же мутации было 5 passed. Теперь тест защищает ровно то, что требует DoD:
+в ошибке названа конкретная переменная. Файл восстановлен, мутация не закоммичена.
+
+`lint`, `typecheck`, `test` (5/5) — зелёные.
+
+**Blocking 1. `pnpm format:check` красный третье ревью подряд.**
+
+```
+[warn] src/app.module.ts
+[warn] src/config/config.module.ts
+[warn] src/config/env.schema.ts
+[warn] src/config/env.validation.spec.ts
+[warn] src/config/env.validation.ts
+[warn] utils/tests/fixtures/env.fixture.ts
+```
+
+`pnpm format` — и пункт закрыт. Гейт стоит нулевого времени, но пока он красный, он не ловит
+ничего, а `pnpm check` в CI не пройдёт.
+
+**Blocking 2. Хостовый URL указывает на базу, которой compose не создаёт.**
+
+```
+.env:               POSTGRES_NAME=barabas
+.env:               POSTGRES_URL=postgres://<creds>@localhost:5433/old_poshta
+docker-compose.yml: POSTGRES_DB: ${POSTGRES_NAME}          -> barabas
+```
+
+Контейнер `postgres` поднимает базу `barabas`, а хостовая урла ходит в `old_poshta` на тот же
+порт 5433. Имя `old_poshta` — очевидно остаток от другого проекта; оно же лежит и в
+`.env.example`, то есть переедет ко всем, кто скопирует файл.
+
+Показательно, что M0-03 этого не ловит и **не должен**: `z.url()` проверяет форму строки, а не
+то, существует ли база. Схема отвечает на вопрос «можно ли это распарсить», а не «сработает ли
+это». Вторую половину закрывает health check из M0-05 — это хороший пример того, зачем он нужен
+отдельно от валидации конфига.
+
+**Nitpick (без изменений с ревью №2).**
+
+- `валедирует` → `валидирует`; в `отбивает oтсутствие` буква `o` латинская.
+- Позитивный кейс подставляет `faker.internet.url()`, то есть `https://...`, хотя фикстура по
+  умолчанию отдаёт `postgres://`. Тест проходит, но проверяет не тот протокол, который поедет
+  в прод.
+- `import path from 'path'` → `node:path`.
+- `env.type.ts` — отдельный файл ради одной строки `z.infer`.
+- Сообщение об ошибке на русском.
+
+### 2026-09-11 — ревью №4: принято
+
+Все четыре гейта зелёные:
+
+```
+$ pnpm format:check   All matched files use Prettier code style!
+$ pnpm lint           (чисто)
+$ pnpm typecheck      (чисто)
+$ pnpm test           Tests  5 passed (5)
+```
+
+Имя базы приведено к одному значению: `POSTGRES_NAME=barabas` и `POSTGRES_URL=.../barabas`
+в `.env` и `.env.example`, `POSTGRES_DB: ${POSTGRES_NAME}` в compose. Остаток `old_poshta` ушёл
+из обоих файлов.
+
+Финальная проверка обоих концов:
+
+```
+$ npx nest start                                    # хост, .env -> localhost:5433
+[Nest] LOG [NestApplication] Nest application successfully started
+
+$ docker compose run --rm --no-deps api ...         # контейнер
+POSTGRES_URL=postgres://<creds>@postgres:5432/barabas
+[Nest] LOG [NestApplication] Nest application successfully started
+```
+
+**Definition of Done — все пункты закрыты.**
+
+- Типизированный доступ: `app.get<Env>(ENV)`, `env.PORT` — `number`, не `any`. Роман выбрал
+  DI-токен с выведенным из схемы типом вместо `ConfigService.get()`; это строже, чем просил
+  issue, потому что `get()` возвращает `T | undefined` и требует ручного дженерика на каждом
+  вызове, а здесь тип один раз выведен из `z.infer` и дальше не может разъехаться со схемой.
+- Убрал переменную → не стартует и называет её. Проверено на реальном процессе, `exit code 1`,
+  падение до `listen`.
+- Прямого `process.env` вне config-модуля нет.
+- Тест на невалидный конфиг есть, и он проверяет имя переменной, а не факт броска — подтверждено
+  мутацией в ревью №3.
+
+Схема описывает ровно конфигурацию приложения (`NODE_ENV`, `PORT`, `POSTGRES_URL`); учётки
+postgres и redis остались инфраструктурой Compose. Это закрывает и вопрос из комментария к M0-02.
+
+**Не сделано, сознательно оставлено (nitpick, не блокирует).** `валедирует` → `валидирует`;
+латинская `o` в `отбивает oтсутствие`; позитивный кейс использует `faker.internet.url()`
+(`https://`) вместо `postgres://`; `import path from 'path'` без префикса `node:`; `env.type.ts`
+отдельным файлом ради одной строки `z.infer`; текст ошибки на русском.
+
+**Долг, вынесенный из этой задачи.** `env_file: .env` отдаёт контейнеру `api` весь файл, включая
+`POSTGRES_PASS` и `REDIS_PASS`, которые приложению не нужны. Сузить — отдельная задача гигиены;
+естественное место — рядом с M0-07 (гигиена логов и redaction).
+
