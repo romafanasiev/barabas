@@ -8,4 +8,8 @@ export const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
 
   POSTGRES_URL: z.url(),
+
+  LOG_LEVEL: z
+    .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent'])
+    .default('info'),
 });
