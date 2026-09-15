@@ -1,6 +1,6 @@
 # M0-06 — Graceful shutdown
 
-Status: ready-for-human
+Status: resolved
 
 ## Задача
 
