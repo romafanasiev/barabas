@@ -1,6 +1,10 @@
 packages:
   - apps/*
 
+allowBuilds:
+  esbuild: true
+  lightningcss: true
+
 onlyBuiltDependencies:
   - esbuild
   - lightningcss
