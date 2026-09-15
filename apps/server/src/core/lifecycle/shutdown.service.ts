@@ -96,7 +96,7 @@ export class ShutdownService
       await close();
       this.logger.info({ dependency }, 'dependency closed');
     } catch (err) {
-      this.logger.error({ dependency, err }, 'dependency failed to close');
+      this.logger.warn({ dependency, err }, 'dependency failed to close');
     }
   }
 

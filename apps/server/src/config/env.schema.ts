@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Levels that log request internals: useful while debugging, never in production. */
+const VERBOSE_LOG_LEVELS: ReadonlySet<string> = new Set(['trace', 'debug']);
+
 export const envSchema = z
   .object({
     NODE_ENV: z
@@ -28,4 +31,14 @@ export const envSchema = z
     message:
       'SHUTDOWN_TIMEOUT_MS должен быть строго больше SHUTDOWN_DRAIN_DELAY_MS',
     path: ['SHUTDOWN_TIMEOUT_MS'],
-  });
+  })
+  .refine(
+    (env) =>
+      env.NODE_ENV !== 'production' || !VERBOSE_LOG_LEVELS.has(env.LOG_LEVEL),
+    {
+      message:
+        'LOG_LEVEL=trace|debug запрещён при NODE_ENV=production: такие логи пишут ' +
+        'внутренности запросов, стоят денег и переживают ротацию',
+      path: ['LOG_LEVEL'],
+    },
+  );

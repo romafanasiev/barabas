@@ -17,13 +17,28 @@ const SERVICE_MSG = 'greeting requested';
 
 type LogLine = Record<string, unknown>;
 
+type RequestFields = {
+  path?: string;
+  queryKeys?: string[];
+  headers: Record<string, string>;
+};
+
 describe('logging (e2e)', () => {
   let app: INestApplication<App>;
   let lines: LogLine[];
+  let logger: pino.Logger;
 
   /** Строка лога по её msg. Читаем то, что реально ушло в поток. */
   const lineWith = (msg: string): LogLine | undefined =>
     lines.find((line) => line.msg === msg);
+
+  /** Всё, что реально ушло в поток, одной строкой. Ищем секрет здесь. */
+  const everything = (): string =>
+    lines.map((line) => JSON.stringify(line)).join('\n');
+
+  /** Поле req из строки запроса — то, что осталось после сериализатора. */
+  const requestFields = (): RequestFields | undefined =>
+    lineWith(REQUEST_MSG)?.req as RequestFields | undefined;
 
   beforeEach(async () => {
     lines = [];
@@ -42,7 +57,7 @@ describe('logging (e2e)', () => {
     });
 
     const env = validateEnv({ ...process.env, NODE_ENV: 'test' });
-    const logger = pino(createLoggerOptions(env), sink);
+    logger = pino(createLoggerOptions(env), sink);
 
     const moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
@@ -101,18 +116,88 @@ describe('logging (e2e)', () => {
   });
 
   it('authorization не попадает в лог', async () => {
-    const secret = 'Bearer secret-token-value';
-
     await request(app.getHttpServer())
       .get('/')
-      .set('authorization', secret)
+      .set('authorization', 'Bearer secret-token-value')
       .expect(200);
 
-    const serialised = lines.map((line) => JSON.stringify(line)).join('\n');
-    const req = lineWith(REQUEST_MSG)?.req as
-      { headers: Record<string, string> } | undefined;
+    expect(everything()).not.toContain('secret-token-value');
+    expect(requestFields()?.headers.authorization).toBeUndefined();
+  });
 
-    expect(serialised).not.toContain('secret-token-value');
-    expect(req?.headers.authorization).toBe('[Redacted]');
+  it('незнакомый заголовок не попадает в лог, разрешённый — попадает', async () => {
+    await request(app.getHttpServer())
+      .get('/')
+      .set('x-api-key', 'SECRET_CUSTOM_HEADER')
+      .set('user-agent', 'probe/1.0')
+      .expect(200);
+
+    const headers = requestFields()?.headers;
+
+    expect(everything()).not.toContain('SECRET_CUSTOM_HEADER');
+    expect(headers?.['x-api-key']).toBeUndefined();
+    expect(headers?.['user-agent']).toBe('probe/1.0');
+  });
+
+  it('значение query-параметра не попадает в лог, а путь читается', async () => {
+    await request(app.getHttpServer())
+      .get('/?token=SECRET_IN_QUERY&page=2')
+      .expect(200);
+
+    const req = requestFields();
+
+    expect(everything()).not.toContain('SECRET_IN_QUERY');
+    expect(req?.path).toBe('/');
+    expect(req?.queryKeys).toEqual(['token', 'page']);
+  });
+
+  it('email из query не попадает в лог', async () => {
+    await request(app.getHttpServer())
+      .get('/?email=victim@example.com')
+      .expect(200);
+
+    expect(everything()).not.toContain('victim@example.com');
+    expect(requestFields()?.queryKeys).toEqual(['email']);
+  });
+
+  it('секрет вырезается на вложенности и внутри массива', () => {
+    logger.info(
+      {
+        user: { profile: { password: 'DEEP_SECRET' } },
+        users: [{ token: 'ARRAY_SECRET' }],
+      },
+      'nested',
+    );
+
+    const line = lineWith('nested') as {
+      user: { profile: { password: string } };
+      users: { token: string }[];
+    };
+
+    expect(everything()).not.toContain('DEEP_SECRET');
+    expect(everything()).not.toContain('ARRAY_SECRET');
+    expect(line.user.profile.password).toBe('[Redacted]');
+    expect(line.users[0]?.token).toBe('[Redacted]');
+  });
+
+  it('платёжные данные вырезаются, email маскируется', () => {
+    logger.info(
+      {
+        order: {
+          email: 'victim@example.com',
+          card: { number: '4111111111111111', cvv: '123' },
+        },
+      },
+      'payment',
+    );
+
+    const line = lineWith('payment') as {
+      order: { email: string; card: string };
+    };
+
+    expect(everything()).not.toContain('4111111111111111');
+    expect(everything()).not.toContain('victim@example.com');
+    expect(line.order.card).toBe('[Redacted]');
+    expect(line.order.email).toBe('v***@example.com');
   });
 });

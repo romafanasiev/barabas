@@ -2,6 +2,7 @@ import { Inject, Injectable, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { HttpLogger, pinoHttp } from 'pino-http';
 import { v4, validate } from 'uuid';
+import { serializeRequest, serializeResponse } from './logger.serializers.js';
 import { LOGGER } from './logger.token.js';
 import { type AppLogger } from './logger.type.js';
 
@@ -12,6 +13,10 @@ export class PinoHttpMiddleware implements NestMiddleware {
   constructor(@Inject(LOGGER) private readonly logger: AppLogger) {
     this.httpLogger = pinoHttp({
       quietReqLogger: true,
+      serializers: {
+        req: serializeRequest,
+        res: serializeResponse,
+      },
       customAttributeKeys: {
         reqId: 'requestId',
         responseTime: 'responseTimeMs',

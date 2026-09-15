@@ -50,6 +50,28 @@ describe('validateEnv', () => {
     expect(act).toThrow(/SHUTDOWN_TIMEOUT_MS/);
   });
 
+  it('отбивает debug-логи в проде', () => {
+    const raw = makeRequiredRawEnv({
+      NODE_ENV: 'production',
+      LOG_LEVEL: 'debug',
+    });
+
+    const act = () => validateEnv(raw);
+
+    expect(act).toThrow(/LOG_LEVEL/);
+  });
+
+  it('пропускает debug-логи вне прода', () => {
+    const raw = makeRequiredRawEnv({
+      NODE_ENV: 'development',
+      LOG_LEVEL: 'debug',
+    });
+
+    const env = validateEnv(raw);
+
+    expect(env.LOG_LEVEL).toBe('debug');
+  });
+
   it('подставляет дефолты, когда заданы только обязательные переменные', () => {
     const raw = makeRequiredRawEnv();
 
