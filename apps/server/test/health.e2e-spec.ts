@@ -20,9 +20,13 @@ const makeClient = (query: ReturnType<typeof vi.fn>) => ({
 
 const makePool = (client: ReturnType<typeof makeClient>) => ({
   connect: vi.fn().mockResolvedValue(client),
+  end: vi.fn().mockResolvedValue(undefined),
 });
 
-const makeRedis = (ping: ReturnType<typeof vi.fn>) => ({ ping });
+const makeRedis = (ping: ReturnType<typeof vi.fn>) => ({
+  ping,
+  quit: vi.fn().mockResolvedValue('OK'),
+});
 
 type Deps = {
   pool: ReturnType<typeof makePool>;

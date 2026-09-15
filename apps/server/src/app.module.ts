@@ -4,6 +4,7 @@ import { AppService } from './app.service.js';
 import { AppConfigModule } from './config/config.module.js';
 import { PostgresModule } from './core/infrastructure/postgres/postgres.module.js';
 import { RedisModule } from './core/infrastructure/redis/redis.module.js';
+import { LifecycleModule } from './core/lifecycle/lifecycle.module.js';
 import { AlsModule } from './core/storage/async-local-storage/als.module.js';
 import { LoggerMiddleware } from './core/telemetry/logger/logger.middleware.js';
 import { LoggerModule } from './core/telemetry/logger/logger.module.js';
@@ -17,6 +18,7 @@ import { HealthModule } from './health/health.module.js';
     RedisModule,
     LoggerModule,
     AlsModule,
+    LifecycleModule,
     HealthModule,
   ],
   controllers: [AppController],

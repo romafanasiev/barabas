@@ -39,6 +39,17 @@ describe('validateEnv', () => {
     expect(env.PORT).toBe(8080);
   });
 
+  it('отбивает дедлайн остановки, который короче паузы на дренаж', () => {
+    const raw = makeRequiredRawEnv({
+      SHUTDOWN_DRAIN_DELAY_MS: '5000',
+      SHUTDOWN_TIMEOUT_MS: '5000',
+    });
+
+    const act = () => validateEnv(raw);
+
+    expect(act).toThrow(/SHUTDOWN_TIMEOUT_MS/);
+  });
+
   it('подставляет дефолты, когда заданы только обязательные переменные', () => {
     const raw = makeRequiredRawEnv();
 
