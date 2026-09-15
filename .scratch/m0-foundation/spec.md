@@ -20,3 +20,4 @@ Status: in-progress
 - `04` Структурированное логирование и correlation id
 - `05` Health checks: liveness и readiness
 - `06` Graceful shutdown
+- `07` Гигиена логов: уровни и redaction

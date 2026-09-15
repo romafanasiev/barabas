@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Урок 0004 — Лог, подписанный чужим именем</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Урок 0004 · этап M0 · наблюдаемость</p>
+  <h1>Лог, подписанный чужим именем</h1>
+  <p class="standfirst">Три урока подряд ты защищал данные от гонки. Сейчас ты увидишь ту же гонку там, где её никто не ждёт, — в собственных логах. И научишься механизму, который в M4 понадобится тебе снова, уже для транзакций.</p>
+  <div class="meta">
+    <span>≈ 25 минут</span>
+    <span>Только Node, без Docker и без базы</span>
+    <span>Ведёт к M0-04, M0-07, M4-05</span>
+  </div>
+
+  <h2>Сначала вспомни</h2>
+
+  <p>Без подглядывания в прошлые уроки.</p>
+
+  <div class="quiz">
+    <span class="label">Recall · 1 из 2</span>
+    <p class="q">Почему правило «не больше двух VIP-мест на покупателя» не закрывается через <code>UNIQUE</code>?</p>
+    <div class="options">
+      <button>Потому что <code>UNIQUE</code> не работает на колонках с внешним ключом</button>
+      <button data-correct>Потому что места разные, а правило считает количество строк</button>
+      <button>Потому что индекс перестраивается позже, чем коммитится вставка</button>
+      <button>Потому что покупатель может держать брони в разных секциях</button>
+    </div>
+    <p class="explain" hidden><code>UNIQUE</code> отвечает на вопрос «было ли уже такое значение». Здесь значения разные — <code>A1</code> и <code>A2</code>, — а нарушает правило их <strong>количество</strong>, которое не лежит ни в одной строке.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Recall · 2 из 2</span>
+    <p class="q">Что даёт <em>materializing conflicts</em> такого, чего не дают первые два способа?</p>
+    <div class="options">
+      <button>Снимает необходимость держать запись внутри транзакции</button>
+      <button>Убирает повторы, потому что конфликт больше не возникает</button>
+      <button data-correct>Даёт constraint, который работает и против чужого запроса</button>
+      <button>Ускоряет проверку, потому что читается одна строка вместо многих</button>
+    </div>
+    <p class="explain" hidden><code>SERIALIZABLE</code> и ручная блокировка защищают только тот код, который их применил. Материализованный счётчик с <code>CHECK</code> — это правило внутри базы: его не обойдёт ни миграция, ни скрипт, ни коллега, который через год не знал про лимит.</p>
+  </div>
+
+  <h2>Задача на один абзац</h2>
+
+  <p>Запрос <code>POST /holds</code> проходит три слоя: controller → service → repository. Где-то в репозитории пишется строка лога <code>hold created</code>. Через неделю приходит покупатель: «я нажал купить, деньги списались, места нет». У тебя есть его время с точностью до минуты, и в логах за эту минуту — четыре тысячи строк.</p>
+
+  <p>Тебе нужно, чтобы каждая строка, порождённая его запросом, была подписана одним и тем же <code>requestId</code>. Тогда вопрос «что случилось с этим заказом» превращается в один <code>grep</code>. Вот и весь <code>M0-04</code>.</p>
+
+  <p>Технически задача звучит обманчиво просто: доставить одно значение из middleware в репозиторий. Способов ровно три, и два из них плохие.</p>
+
+  <h3>Способ первый: протащить параметром</h3>
+
+  <p><code>createHold(dto, requestId)</code>, дальше <code>insert(row, requestId)</code>, и так до самого низа. Работает. И отравляет каждую сигнатуру в проекте значением, которое не имеет отношения ни к домену, ни к бизнес-правилу: репозиторий начинает знать про HTTP. Через месяц у тебя половина методов принимает аргумент, который они только передают дальше. Именно это запрещено в DoD: <em>«проброс id должен работать без ручной передачи логгера через все слои сервисов»</em>.</p>
+
+  <h3>Способ второй: глобальная переменная</h3>
+
+  <p>Очевидная идея: положить <code>requestId</code> в переменную модуля, все читают оттуда. Вот тут и начинается урок, потому что этот способ не просто плох — он <strong>врёт</strong>, и врёт молча.</p>
+
+  <h2>Опыт 1: лог запроса A, подписанный именем B</h2>
+
+  <p>Создай папку где угодно вне репозитория и положи туда файл. Никаких зависимостей, только Node.</p>
+
+  <p class="filename">global.mjs</p>
+  <pre><code>const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
+
+let currentRequestId = null;
+
+async function repository() {
+  await sleep(10);
+  console.log(`  repository: requestId = ${currentRequestId}`);
+}
+
+async function handleRequest(id, workMs) {
+  currentRequestId = id;
+  console.log(`controller: начал ${id}`);
+  await sleep(workMs);
+  await repository();
+}
+
+await Promise.all([handleRequest('req-A', 30), handleRequest('req-B', 5)]);</code></pre>
+
+  <p>Два запроса пришли почти одновременно — A работает дольше, B быстрее. Запусти:</p>
+
+  <pre><code>$ node global.mjs
+controller: начал req-A
+controller: начал req-B
+  repository: requestId = req-B
+  repository: requestId = req-B</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Смотри внимательно</span>
+    <p>Контроллер отчитался о двух разных запросах. Репозиторий отработал дважды. А в логе оба раза стоит <code>req-B</code>. Строка от запроса A существует — и <strong>подписана чужим именем</strong>.</p>
+  </div>
+
+  <p>Разбери по шагам, это того стоит:</p>
+
+  <ol>
+    <li><code>handleRequest('req-A')</code> пишет <code>currentRequestId = 'req-A'</code> и уходит в <code>await sleep(30)</code>. Управление возвращается в event loop.</li>
+    <li><code>handleRequest('req-B')</code> пишет <code>currentRequestId = 'req-B'</code> — <strong>поверх</strong> — и уходит в <code>await sleep(5)</code>.</li>
+    <li>Через 5 мс просыпается B, зовёт репозиторий, тот ждёт ещё 10 мс и печатает <code>req-B</code>. Верно.</li>
+    <li>Через 30 мс просыпается A, зовёт репозиторий, тот печатает то, что лежит в переменной сейчас, — <code>req-B</code>. Неверно, и никто об этом не узнает.</li>
+  </ol>
+
+  <p>Это ровно та же ошибка, что в <a href="./0001-race-for-the-last-ticket.html">уроке 0001</a>, только вместо остатка билетов — переменная в памяти процесса. Node однопоточный, но <strong>однопоточный не значит «по одному запросу за раз»</strong>: каждый <code>await</code> — это точка, в которой твой обработчик отпускает управление и в те же данные заходит чужой. Разница с уроком 0001 в одном: там за тебя вступилась база с <code>CHECK</code>, а здесь не вступится никто. Битый лог выглядит как здоровый лог.</p>
+
+  <div class="callout">
+    <span class="label">Почему это хуже, чем кажется</span>
+    <p>Сломанный лог не падает и не отдаёт <code>500</code>. Ты узнаешь о нём в тот единственный момент, когда он нужен: в разборе инцидента, когда по <code>requestId</code> пострадавшего покупателя ты соберёшь чужую историю и будешь час искать ошибку не в том месте.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Проверка · 1 из 3</span>
+    <p class="q">Почему глобальная переменная подписала лог запроса A именем запроса B?</p>
+    <div class="options">
+      <button>Промисы разрешились в обратном порядке, и строки перепутались</button>
+      <button>Node выполнил обработчики в разных потоках и потерял значение</button>
+      <button data-correct>Пока A ждал на <code>await</code>, B перезаписал ту же переменную</button>
+      <button>Сборщик мусора освободил значение A как недостижимое из кода</button>
+    </div>
+    <p class="explain" hidden>Переменная одна на процесс, а обработчиков в полёте — сколько угодно. Значение привязано к <strong>моменту времени</strong>, а нужно, чтобы оно было привязано к <strong>цепочке вызовов</strong>. Ровно это и делает <code>AsyncLocalStorage</code>.</p>
+  </div>
+
+  <h2>Способ третий: AsyncLocalStorage</h2>
+
+  <p>Встроенный модуль <code>node:async_hooks</code>. Модель такая:</p>
+
+  <blockquote><code>storage.run(значение, fn)</code> — выполняет <code>fn</code>, и всё, что из <code>fn</code> вызвано, включая асинхронные продолжения после каждого <code>await</code>, видит это значение через <code>storage.getStore()</code>. Параллельные цепочки видят каждая своё.</blockquote>
+
+  <p>То есть это переменная, привязанная не к процессу, а к <strong>цепочке асинхронных вызовов</strong>. Node сам протаскивает её через <code>await</code>, <code>setTimeout</code>, коллбэки и промисы — то, что руками пришлось бы делать параметром.</p>
+
+  <p>Тот же файл, три изменённые строки:</p>
+
+  <p class="filename">als.mjs</p>
+  <pre><code>import { AsyncLocalStorage } from 'node:async_hooks';
+
+const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
+
+const storage = new AsyncLocalStorage();
+
+async function repository() {
+  await sleep(10);
+  console.log(`  repository: requestId = ${storage.getStore()?.requestId}`);
+}
+
+async function handleRequest(id, workMs) {
+  await storage.run({ requestId: id }, async () =&gt; {
+    console.log(`controller: начал ${id}`);
+    await sleep(workMs);
+    await repository();
+  });
+}
+
+await Promise.all([handleRequest('req-A', 30), handleRequest('req-B', 5)]);</code></pre>
+
+  <pre><code>$ node als.mjs
+controller: начал req-A
+controller: начал req-B
+  repository: requestId = req-B
+  repository: requestId = req-A</code></pre>
+
+  <div class="callout win">
+    <span class="label">Вот он, наблюдаемый результат</span>
+    <p>Порядок строк остался прежним — B успел раньше. Но каждая строка теперь подписана своим именем. Репозиторий по-прежнему <strong>ничего не знает</strong> про HTTP, про id и про то, кто его позвал: его сигнатура не изменилась ни на символ.</p>
+  </div>
+
+  <h3>Почему не request-scoped провайдер Nest</h3>
+
+  <p>У Nest есть свой ответ: <code>@Injectable({ scope: Scope.REQUEST })</code>. Он работает, и знать про него надо, но у него есть цена, которую в документации называют <em>bubbling</em>: scope поднимается вверх по графу зависимостей. Сделал request-scoped логгер — request-scoped становится и сервис, который его инжектит, и контроллер над ним. Дальше Nest создаёт новое дерево провайдеров на каждый запрос вместо одного синглтона на процесс.</p>
+
+  <p>Для нашего проекта это плохая сделка по двум причинам. Первая — цена на горячем пути: билеты продаются пиками, а не ровным фоном. Вторая важнее: DI достаёт только то, что живёт внутри графа Nest. А логировать надо и из мест, куда DI не дотягивается, — из обработчика необработанного промиса, из коллбэка драйвера БД, из фонового воркера. <code>AsyncLocalStorage</code> — это механизм Node, а не Nest, и он работает везде, где работает Node.</p>
+
+  <h2>Складываем с Pino: храни логгер, а не строку</h2>
+
+  <p>Наивная связка — положить в store строку id и подставлять её в каждый вызов: <code>logger.info({ requestId: store.requestId }, 'hold created')</code>. Это тот же «протащить параметром», только через глобальную дверь: про <code>requestId</code> опять обязан помнить каждый вызывающий, и забытая подстановка — это молча потерянная строка.</p>
+
+  <p>Правильный ход: класть в store <strong>уже обогащённый child-логгер</strong>. <code>logger.child({ requestId })</code> пинит пару к логгеру, и она печатается в каждой строке этого child сама. Слои получают логгер, который уже всё про себя знает.</p>
+
+  <p class="filename">pino-demo.mjs · <code>npm i pino</code></p>
+  <pre><code>import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
+import pino from 'pino';
+
+const root = pino({
+  base: null,
+  redact: ['req.headers.authorization', 'password', '*.password'],
+});
+
+const storage = new AsyncLocalStorage();
+const log = () =&gt; storage.getStore() ?? root;   // вне запроса — корневой логгер
+
+function repository() {
+  log().info({ seatId: 'A12' }, 'hold created');
+}
+
+function handleRequest(headerValue) {
+  const requestId = headerValue ?? randomUUID();
+  storage.run(root.child({ requestId }), () =&gt; {
+    log().info({ user: { email: 'a@b.c', password: 'hunter2' } }, 'request received');
+    repository();
+  });
+}
+
+handleRequest('from-client-1');   // клиент прислал x-request-id
+handleRequest(undefined);         // не прислал — генерируем свой</code></pre>
+
+  <pre><code>$ node pino-demo.mjs
+{"level":30,"time":...,"requestId":"from-client-1","user":{"email":"a@b.c","password":"[Redacted]"},"msg":"request received"}
+{"level":30,"time":...,"requestId":"from-client-1","seatId":"A12","msg":"hold created"}
+{"level":30,"time":...,"requestId":"92289369-4f10-4367-ab7e-612b02f3d0b6","user":{...},"msg":"request received"}
+{"level":30,"time":...,"requestId":"92289369-4f10-4367-ab7e-612b02f3d0b6","seatId":"A12","msg":"hold created"}</code></pre>
+
+  <p>Четыре строки, две пары, в каждой паре свой id. Строка из репозитория подписана, хотя <code>repository()</code> про id не знает. <code>password</code> заменён на <code>[Redacted]</code> — это сделала опция <code>redact</code>, а не ты в месте вызова, и в этом вся её ценность: она работает и на том коде, который напишут после тебя.</p>
+
+  <div class="callout warn">
+    <span class="label">Заметил, что проехало?</span>
+    <p><code>email</code> попал в лог открытым: в <code>redact</code> его нет. Это не баг демо — это ровно та дыра, которую закрывает <code>M0-07</code>, и хороший повод понять, почему redaction вынесен в отдельный issue: список полей — это <strong>политика</strong>, и она меняется без единой правки в логгере.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Проверка · 2 из 3</span>
+    <p class="q">Что мы положили в <code>AsyncLocalStorage</code> и почему именно это?</p>
+    <div class="options">
+      <button>Строку с id — каждый слой сам подставит её в вызов логгера</button>
+      <button data-correct>Child-логгер: он печатает <code>requestId</code> в каждой строке сам</button>
+      <button>Объект HTTP-запроса — логгер достанет из него нужные заголовки</button>
+      <button>Копию корневого логгера — одну на процесс, чтобы не плодить объекты</button>
+    </div>
+    <p class="explain" hidden>Если в store лежит строка, про неё обязан помнить каждый вызывающий — а забыть можно молча. Если лежит child-логгер, то забыть нечего: <code>requestId</code> привязан к самому логгеру и печатается всегда.</p>
+  </div>
+
+  <h2>Три ловушки, на которых спотыкаются</h2>
+
+  <p><strong>Первая: <code>enterWith()</code> вместо <code>run()</code>.</strong> В документации есть метод <code>enterWith(store)</code>, который «включает» контекст и не требует колбэка — выглядит удобнее. Но он не ограничен рамками функции: контекст остаётся жить до конца текущей цепочки, и в долгоживущих обработчиках даёт ровно ту же утечку через границы запросов, с которой мы начали урок. В документации Node у него прямое предупреждение. Бери <code>run()</code>.</p>
+
+  <p><strong>Вторая: контекст не «догоняет» задним числом.</strong> Значение видят те вызовы, которые <em>начались внутри</em> <code>run()</code>. Коллбэк, зарегистрированный до входа в <code>run()</code>, отработает без контекста, и <code>getStore()</code> вернёт <code>undefined</code>. Поэтому в коде выше <code>?? root</code> — не украшение, а обязательная часть: логгер должен уметь работать и вне запроса.</p>
+
+  <p><strong>Третья: store мутабелен, и этим злоупотребляют.</strong> Технически в store можно дописывать поля по ходу запроса, и очень быстро он превращается в свалку «глобальных переменных на запрос»: userId, фича-флаги, черновик ответа. Держи правило: в store едет <strong>контекст наблюдаемости</strong>, а не данные домена. Данные домена ходят параметрами — их видно в сигнатуре, их проверяет компилятор.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 3 из 3</span>
+    <p class="q">В каком случае <code>getStore()</code> вернёт <code>undefined</code> внутри запроса?</p>
+    <div class="options">
+      <button>В любом <code>await</code> глубже третьего уровня вложенности вызовов</button>
+      <button data-correct>В коллбэке, который зарегистрировали до входа в <code>run()</code></button>
+      <button>В методе класса, помеченном <code>async</code>, но не делающем <code>await</code></button>
+      <button>В коде, который выполняется после отправки ответа клиенту</button>
+    </div>
+    <p class="explain" hidden>Контекст наследуется в момент создания асинхронной операции. Слушатель, повешенный на событие до <code>run()</code>, унаследовал контекст того места, где его вешали, — то есть никакого. Глубина вложенности и факт отправки ответа роли не играют.</p>
+  </div>
+
+  <h2>Зачем это на самом деле — мост в M4</h2>
+
+  <p>Ты сейчас выучил не «как приделать id к логам». Ты выучил единственный в Node способ иметь <strong>контекст запроса, невидимый в сигнатурах</strong>. И через несколько этапов он понадобится тебе для вещи посерьёзнее логов.</p>
+
+  <p>В M4 встанет вопрос: <code>HoldService</code> зовёт два репозитория, и оба должны попасть в <strong>одну транзакцию</strong>. Варианта опять три, и они те же самые: протащить клиент БД параметром через все методы; держать его в переменной (и получить ту самую гонку, только теперь она разъедет транзакции покупателей); либо положить активный клиент в <code>AsyncLocalStorage</code> и дать репозиториям доставать его оттуда.</p>
+
+  <p>Разница в цене ошибки. Здесь она — лог с чужой подписью. Там — <code>COMMIT</code> половины изменений и два человека на одном кресле. Поэтому механизм и разбирается здесь, в M0, где он ничего не стоит.</p>
+
+  <h2>Задание</h2>
+
+  <ol class="steps">
+    <li>Прогони <code>global.mjs</code> и <code>als.mjs</code> руками. Теперь поменяй задержки местами (<code>A: 5</code>, <code>B: 30</code>) и запусти <code>global.mjs</code> снова. Обе строки опять подписаны <code>req-B</code> — хотя первым закончил A. Объясни мне, почему подпись <strong>вообще не зависит</strong> от задержек и какое значение всегда окажется в переменной к моменту первого лога. Ответ в одну фразу, но точный. Потом прогони с теми же задержками <code>als.mjs</code> и сравни порядок строк с первым запуском.</li>
+    <li>Открой issue <code>M0-04</code> и прими решение по открытому вопросу: <code>nestjs-pino</code> или руками на <code>pino-http</code> + <code>AsyncLocalStorage</code>. Запиши выбор и <strong>одну причину</strong> в <code>## Comments</code> до того, как начнёшь писать код. Моя рекомендация там же — спорить с ней можно, игнорировать нельзя.</li>
+    <li><strong>Главное.</strong> Сделай <code>M0-04</code>. Напиши тест, который делает один HTTP-запрос и проверяет, что в двух разных строках лога — из middleware и из сервиса — стоит <strong>один и тот же</strong> <code>requestId</code>. Тест должен читать сериализованную строку, а не аргументы вызова логгера.</li>
+    <li>Проверь, что тест кусается: убери проброс контекста (например, замени <code>getStore()</code> на корневой логгер) и убедись, что тест краснеет. Это наше ручное мутационное тестирование — пришли мне вывод обоих прогонов, до мутации и после.</li>
+    <li>Ответь одной строкой: что будет с <code>requestId</code>, если клиент пришлёт заголовок <code>x-request-id: foo\nlevel=error msg="payment ok"</code>? Это не гипотетический вопрос — в DoD есть пункт про доверие к заголовку.</li>
+  </ol>
+
+  <div class="footer">
+    <h2 id="src">Первоисточники</h2>
+    <ul>
+      <li><strong>Читать в первую очередь:</strong> <a href="https://nodejs.org/api/async_context.html">Node.js Docs — Asynchronous context tracking</a>. Разделы <code>asyncLocalStorage.run()</code>, <code>getStore()</code> и предупреждение к <code>enterWith()</code>. Страница короткая, прочти целиком.</li>
+      <li><a href="https://getpino.io/#/docs/child-loggers">Pino — Child loggers</a>: «key-value pairs can be pinned to a logger causing them to be output on every log line». Там же бенчмарки создания child — порядка 230 мс на 10 000 штук, то есть на запрос это не расход.</li>
+      <li><a href="https://getpino.io/#/docs/redaction">Pino — Redaction</a>: пути, <code>[Redacted]</code>, переопределение в child. Понадобится целиком в <code>M0-07</code>.</li>
+      <li><a href="https://getpino.io/#/docs/asynchronous">Pino — Asynchronous logging</a>: буферизация и <code>minLength</code> — почему Pino не делает syscall на каждую строку, в отличие от <code>console.log</code>.</li>
+      <li><a href="https://docs.nestjs.com/fundamentals/injection-scopes">NestJS — Injection scopes</a>, раздел «Scope hierarchy» (bubbling) и предупреждение про производительность. Это обоснование, почему мы не берём request scope.</li>
+      <li>Глубже, если понравилось: исходник <a href="https://github.com/iamolegga/nestjs-pino">nestjs-pino</a> — найди там <code>AsyncLocalStorage</code> и посмотри, как то же самое сделано за тебя.</li>
+    </ul>
+
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="./0003-rule-the-database-cannot-see.html">Урок 0003 — Правило, которое база не видит</a></li>
+      <li><a href="./0001-race-for-the-last-ticket.html">Урок 0001 — Гонка за последним билетом</a></li>
+      <li><a href="../.scratch/m0-foundation/issues/04-logging-and-correlation-id.md">Issue M0-04</a> и <a href="../.scratch/m0-foundation/issues/07-log-hygiene-and-redaction.md">M0-07</a></li>
+      <li><a href="../GLOSSARY.md">Словарь</a> — <code>correlation id</code> и <code>redaction</code> уедут туда, когда сдашь пункт 3</li>
+    </ul>
+
+    <div class="ask">
+      Жду пункты 1, 3 и 4. Пункт 4 важнее пункта 3: связать логгер по документации — навык на один вечер, а доказать мутацией, что твой тест вообще что-то проверяет, — это то, за что тебя будут держать в команде. Пункт 5 — на две минуты, но ответ на него определит одну строчку кода в валидации заголовка.
+    </div>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

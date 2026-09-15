@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Урок 0005 — Площадка, которая переехала наполовину</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Урок 0005 · этап M1 · проектирование БД</p>
+  <h1>Площадка, которая переехала наполовину</h1>
+  <p class="standfirst">M0 доживает последние issue, дальше — схема, поверх которой встанет весь проект. Нормальные формы ты можешь прочитать в любом учебнике за десять минут и забыть за пять. Поэтому здесь другое: ты сломаешь плоскую таблицу тремя способами в терминале и получишь один вопрос, который заменяет все формулы.</p>
+  <div class="meta">
+    <span>≈ 30 минут</span>
+    <span>Нужен postgres из твоего <code>docker compose</code></span>
+    <span>Ведёт к M1-02…M1-05, M1-12</span>
+  </div>
+
+  <h2>Сначала вспомни</h2>
+
+  <p>Без подглядывания в прошлые уроки.</p>
+
+  <div class="quiz">
+    <span class="label">Recall · 1 из 2</span>
+    <p class="q">Что кладут в <code>AsyncLocalStorage</code> на входе в запрос и почему именно это?</p>
+    <div class="options">
+      <button>Строку с id — каждый слой подставит её в вызов логгера сам</button>
+      <button data-correct>Child-логгер — он печатает <code>requestId</code> в каждой строке сам</button>
+      <button>Объект запроса — логгер достанет из него нужные заголовки сам</button>
+      <button>Копию корневого логгера — одну на процесс, чтобы не плодить объекты</button>
+    </div>
+    <p class="explain" hidden>Если в store лежит строка, про неё обязан помнить каждый вызывающий — а забыть можно молча, и потерянная строка ничем себя не выдаст. Child-логгер пинит пару к себе: слой получает логгер, который уже всё про себя знает, и не знает, что такое <code>requestId</code>.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Recall · 2 из 2</span>
+    <p class="q">Почему write skew называют следствием схемы, а не следствием уровня изоляции?</p>
+    <div class="options">
+      <button>Потому что уровень изоляции задаётся в конфиге, а не в коде запроса</button>
+      <button>Потому что при <code>SERIALIZABLE</code> он всё равно воспроизводится на чтении</button>
+      <button data-correct>Потому что схема решает, есть ли строка, на которую вешать constraint</button>
+      <button>Потому что изоляция действует внутри транзакции, а правило шире одной строки</button>
+    </div>
+    <p class="explain" hidden>Пока факт «сколько мест держит покупатель» не записан ни в одной строке, защищать нечего: <code>SERIALIZABLE</code> прикроет только тот код, который его попросил. Материализуешь конфликт строкой со счётчиком — и правило становится <code>CHECK</code>, который работает против любого запроса, включая чужой скрипт. Сегодняшний урок — про то, как такие строки вообще появляются.</p>
+  </div>
+
+  <h2>Задача на один абзац</h2>
+
+  <p>Тебе нужно продавать билеты. Самая честная первая мысль — одна таблица: кто, куда, на какой концерт, за сколько. Одна строка = одна продажа, всё рядом, никаких <code>JOIN</code>. Такую таблицу пишут в проде чаще, чем принято признавать, и она даже работает — ровно до первого изменения данных.</p>
+
+  <p>Сейчас ты её построишь и сломаешь три раза подряд. Каждая поломка — это <strong>аномалия</strong>, у аномалий есть имена, и все три имеют одну причину.</p>
+
+  <p class="filename">поднять базу и зайти в psql</p>
+  <pre><code>$ docker compose up -d postgres
+$ docker compose exec postgres psql -U postgres -d barabas</code></pre>
+
+  <p>Всё, что ниже, живёт в отдельной схеме — проект не запачкаем, в конце удалим одной строкой.</p>
+
+  <pre><code>CREATE SCHEMA lesson0005;
+SET search_path = lesson0005;</code></pre>
+
+  <h2>Опыт 1: три аномалии на одной таблице</h2>
+
+  <pre><code>CREATE TABLE sales (
+  id           bigserial PRIMARY KEY,
+  venue_name   text          NOT NULL,
+  venue_city   text          NOT NULL,
+  event_title  text          NOT NULL,
+  event_starts timestamptz   NOT NULL,
+  section_name text          NOT NULL,
+  seats        text          NOT NULL,
+  ticket_type  text          NOT NULL,
+  price        numeric(12,2) NOT NULL,
+  buyer_email  text          NOT NULL
+);
+
+INSERT INTO sales
+  (venue_name, venue_city, event_title, event_starts, section_name, seats, ticket_type, price, buyer_email)
+VALUES
+  ('Палац Спорту', 'Київ', 'Океан Ельзи', '2026-10-05 19:00+03', 'Партер',   'A1,A2',   'Standard', 1200.00, 'ira@example.com'),
+  ('Палац Спорту', 'Київ', 'Океан Ельзи', '2026-10-05 19:00+03', 'Партер',   'A3',      'VIP',      3500.00, 'oleh@example.com'),
+  ('Палац Спорту', 'Київ', 'Jinjer',      '2026-11-02 20:00+02', 'Балкон',   'B1,B2',   'Standard',  900.00, 'ira@example.com'),
+  ('Палац спорту', 'Київ', 'Jinjer',      '2026-11-02 20:00+02', 'Партер',   'A10,A11', 'Standard',  900.00, 'lena@example.com'),
+  ('Stereo Plaza', 'Київ', 'Jinjer',      '2026-11-03 20:00+02', 'Фан-зона', '-',       'Standard',  750.00, 'max@example.com');</code></pre>
+
+  <p>Пять продаж. Обрати внимание на четвёртую строку: <code>Палац спорту</code> с маленькой «с». Это не подстава ради урока — это то, что происходит с любым фактом, который записан в базу больше одного раза. Он расходится.</p>
+
+  <h3>Аномалия обновления</h3>
+
+  <p>Площадка сменила название. Одно изменение в реальном мире:</p>
+
+  <pre><code>UPDATE sales SET venue_name = 'Палац Спорту (МВЦ)' WHERE venue_name = 'Палац Спорту';
+SELECT DISTINCT venue_name FROM sales ORDER BY 1;</code></pre>
+
+  <pre><code>     venue_name     
+--------------------
+ Stereo Plaza
+ Палац спорту
+ Палац Спорту (МВЦ)
+(3 rows)</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Смотри внимательно</span>
+    <p>Площадка переехала <strong>наполовину</strong>. Три строки переименованы, одна осталась в старом мире, и база совершенно этим довольна: никакой ошибки, никакого <code>500</code>. Задай ей теперь вопрос «как называется эта площадка» — у неё нет ответа. Не потому, что она не знает, а потому, что таких ответов у неё четыре.</p>
+  </div>
+
+  <p>Обрати внимание на цену: чтобы поймать это, нужен был <code>SELECT DISTINCT</code> — то есть кто-то должен был заподозрить проблему. В проде её находят через полгода, когда на странице концерта одна площадка отображается двумя карточками.</p>
+
+  <h3>Аномалия вставки</h3>
+
+  <p>Подписали новую площадку, концертов там ещё нет. Заведи её:</p>
+
+  <pre><code>INSERT INTO sales (venue_name, venue_city) VALUES ('Атлас', 'Київ');</code></pre>
+
+  <pre><code>ERROR:  null value in column "event_title" of relation "sales" violates not-null constraint
+DETAIL:  Failing row contains (6, Атлас, Київ, null, null, null, null, null, null, null).</code></pre>
+
+  <p>Факт «существует площадка Атлас» записать некуда: в этой таблице площадка существует только как приложение к продаже. Выходов два, и оба плохие — либо снять <code>NOT NULL</code> с половины колонок (и получить строки-призраки, которые придётся отфильтровывать в каждом запросе), либо выдумать фиктивный концерт с фиктивным покупателем.</p>
+
+  <h3>Аномалия удаления</h3>
+
+  <p>Покупатель <code>max@example.com</code> потребовал удалить его данные. Законное требование, выполняем:</p>
+
+  <pre><code>DELETE FROM sales WHERE buyer_email = 'max@example.com';
+SELECT DISTINCT venue_name FROM sales ORDER BY 1;</code></pre>
+
+  <pre><code>     venue_name     
+--------------------
+ Палац спорту
+ Палац Спорту (МВЦ)
+(2 rows)</code></pre>
+
+  <p>Вместе с его единственной продажей из базы исчезла площадка <strong>Stereo Plaza</strong>. Она была записана только в этой строке — других продаж туда не было. Удаляя одно, ты потерял другое, потому что база не знала, что это <em>другое</em>.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 1 из 3</span>
+    <p class="q">Что общего у трёх аномалий, которые ты сейчас получил?</p>
+    <div class="options">
+      <button>Отсутствие транзакции вокруг каждой из трёх операций</button>
+      <button>Отсутствие индекса на колонках, по которым идёт <code>WHERE</code></button>
+      <button data-correct>Несколько независимых фактов, сцепленных в одну строку</button>
+      <button>Отсутствие внешних ключей между колонками одной таблицы</button>
+    </div>
+    <p class="explain" hidden>В строке <code>sales</code> живут четыре независимых факта: существует площадка, существует концерт, существует место, состоялась продажа. Они рождаются и умирают в разное время, а строка у них одна — поэтому появление одного требует выдумать остальные, а смерть одного уносит остальные с собой. Транзакции и индексы здесь ни при чём: <code>UPDATE</code> отработал корректно и полностью.</p>
+  </div>
+
+  <h2>Вопрос, который заменяет формулы</h2>
+
+  <p>Нормализация в учебнике — это 1NF → 2NF → 3NF → BCNF, зависимости, детерминанты. В работе это один вопрос, который ты задаёшь каждой колонке:</p>
+
+  <div class="callout">
+    <span class="label">Главное</span>
+    <p><strong>От чего зависит этот факт — и записан ли он где-то ещё?</strong> Если факт зависит не от ключа строки, а от чего-то другого в этой же строке, — он здесь в гостях, и рано или поздно разойдётся со своей копией.</p>
+  </div>
+
+  <p>В <code>sales</code> ключ — это <code>id</code> продажи. От продажи зависит покупатель. А вот <code>venue_city</code> зависит не от продажи, а от <code>venue_name</code>. Город переехал в эту строку за компанию с площадкой — и поэтому записан столько раз, сколько было продаж.</p>
+
+  <p>Классическая формулировка того же самого — присяга Кента, её стоит выучить дословно, потому что на собеседовании она звучит как знание форм:</p>
+
+  <p><em>Каждый неключевой атрибут зависит от ключа, от всего ключа и ни от чего, кроме ключа.</em></p>
+
+  <ul>
+    <li><strong>«от ключа»</strong> — это 1NF: в ячейке одно значение, а не список. Иначе зависеть не от чего.</li>
+    <li><strong>«от всего ключа»</strong> — это 2NF: при составном ключе <code>(event_id, seat_id)</code> колонка <code>event_title</code> зависит только от половины. Она принадлежит концерту, а не продаже места.</li>
+    <li><strong>«ни от чего, кроме ключа»</strong> — это 3NF: <code>venue_city</code> зависит от <code>venue_name</code>, а тот ключом не является. Ровно наш случай.</li>
+  </ul>
+
+  <p>3NF покрывает практически всё, с чем ты столкнёшься в этом проекте. BCNF, 4NF и 5NF существуют и ловят экзотику с несколькими перекрывающимися ключами; знать о них полезно, тратить на них M1 — нет.</p>
+
+  <h2>1NF — это не про красоту, это про то, что можно запретить</h2>
+
+  <p>Колонка <code>seats</code> у нас хранит <code>'A1,A2'</code>. Выглядит безобидно и даже удобно. Теперь вспомни миссию проекта: <strong>два человека не должны оказаться на одном кресле</strong>. Попробуй выразить это правило на такой схеме.</p>
+
+  <p>Первое, что приходит в голову, — искать вхождение:</p>
+
+  <pre><code>SELECT id, event_title, seats FROM sales WHERE seats LIKE '%A1%' ORDER BY id;</code></pre>
+
+  <pre><code> id | event_title |  seats  
+----+-------------+---------
+  1 | Океан Ельзи | A1,A2
+  4 | Jinjer      | A10,A11
+(2 rows)</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Смотри внимательно</span>
+    <p>Место <code>A10</code> ответило на вопрос про место <code>A1</code>. И это ещё лучший исход — поиск подстрокой нашёл лишнее, ты хотя бы заметил. Хуже, когда он не найдёт нужное: <code>'A1, A2'</code> с пробелом, <code>'a1'</code> в другом регистре.</p>
+  </div>
+
+  <p>Но настоящая проблема глубже поиска. <code>UNIQUE</code> вешается на <strong>значение в колонке</strong>. Значение здесь — строка <code>'A1,A2'</code> целиком. Для базы «место A1» просто не существует как объект: нет ни строки, ни колонки, которые бы его обозначали. Запретить продать его дважды нечем — не потому, что не хватает синтаксиса, а потому, что <em>запрещать нечего</em>.</p>
+
+  <p>Это зеркало <a href="./0003-rule-the-database-cannot-see.html">урока 0003</a>. Там ты <strong>материализовал</strong> конфликт — создавал строку специально, чтобы дать базе, на что повесить constraint. Нарушение 1NF делает обратное: прячет от базы то, что у неё уже было. Список в ячейке — это правило, которое база не видит, созданное на ровном месте.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 2 из 3</span>
+    <p class="q">Почему правило «место продаётся один раз» нельзя выразить на колонке <code>seats text</code>?</p>
+    <div class="options">
+      <button>Потому что <code>UNIQUE</code> не работает на колонках типа <code>text</code> без длины</button>
+      <button>Потому что порядок мест внутри строки у разных продаж разный</button>
+      <button data-correct>Потому что у базы нет значения «место» — есть значение «строка»</button>
+      <button>Потому что поиск подстрокой не может использовать обычный btree-индекс</button>
+    </div>
+    <p class="explain" hidden>Constraint ограничивает значения, которые база различает. Пока место — это кусок текста внутри большего текста, различать нечего: <code>UNIQUE (seats)</code> честно запретит две одинаковые <em>строки</em>, а <code>'A1,A2'</code> и <code>'A2,A1'</code> для него разные. Регистр, пробелы и индексы — следствия, а не причина.</p>
+  </div>
+
+  <h3>Та же ошибка в двух модных нарядах</h3>
+
+  <ul>
+    <li><code>seats jsonb</code> вместо <code>text</code>. Ощущается современно, индексируется GIN, и это ровно то же нарушение 1NF: место по-прежнему не строка таблицы, <code>FOREIGN KEY</code> на него не повесить. JSONB законен там, где ты хранишь <strong>непрозрачный</strong> кусок данных, который не защищаешь constraint'ом и не запрашиваешь по частям, — сырой ответ платёжного провайдера для аудита. Схему домена в него не прячут.</li>
+    <li><code>seat_1, seat_2, seat_3</code> — «повторяющаяся группа». Ломается на четвёртом месте, а запрос «кто сидит на A1» превращается в <code>OR</code> по трём колонкам, который забудут дописать при добавлении четвёртой.</li>
+  </ul>
+
+  <h2>Опыт 2: разложить и получить инвариант одной строкой DDL</h2>
+
+  <p>Теперь то же самое, но каждый факт — в своём месте. Обрати внимание не на количество таблиц, а на последнюю строку в <code>sold_seats</code>.</p>
+
+  <pre><code>CREATE TABLE venues (
+  id   bigserial PRIMARY KEY,
+  name text NOT NULL,
+  city text NOT NULL
+);
+
+CREATE TABLE sections (
+  id       bigserial PRIMARY KEY,
+  venue_id bigint  NOT NULL REFERENCES venues(id),
+  name     text    NOT NULL,
+  numbered boolean NOT NULL,
+  UNIQUE (venue_id, name)
+);
+
+CREATE TABLE seats (
+  id         bigserial PRIMARY KEY,
+  section_id bigint NOT NULL REFERENCES sections(id),
+  row_label  text   NOT NULL,
+  number     int    NOT NULL,
+  UNIQUE (section_id, row_label, number)
+);
+
+CREATE TABLE events (
+  id        bigserial PRIMARY KEY,
+  venue_id  bigint      NOT NULL REFERENCES venues(id),
+  title     text        NOT NULL,
+  starts_at timestamptz NOT NULL
+);
+
+CREATE TABLE ticket_types (
+  id       bigserial PRIMARY KEY,
+  event_id bigint        NOT NULL REFERENCES events(id),
+  name     text          NOT NULL,
+  price    numeric(12,2) NOT NULL,
+  UNIQUE (event_id, name)
+);
+
+CREATE TABLE sold_seats (
+  event_id       bigint NOT NULL REFERENCES events(id),
+  seat_id        bigint NOT NULL REFERENCES seats(id),
+  ticket_type_id bigint NOT NULL REFERENCES ticket_types(id),
+  buyer_email    text   NOT NULL,
+  PRIMARY KEY (event_id, seat_id)
+);</code></pre>
+
+  <p>Наполним минимумом:</p>
+
+  <pre><code>INSERT INTO venues (name, city) VALUES ('Палац Спорту', 'Київ');
+INSERT INTO sections (venue_id, name, numbered) VALUES (1, 'Партер', true);
+INSERT INTO seats (section_id, row_label, number) VALUES (1, 'A', 1), (1, 'A', 2);
+INSERT INTO events (venue_id, title, starts_at) VALUES (1, 'Океан Ельзи', '2026-10-05 19:00+03');
+INSERT INTO ticket_types (event_id, name, price) VALUES (1, 'Standard', 1200.00);
+INSERT INTO sold_seats (event_id, seat_id, ticket_type_id, buyer_email) VALUES (1, 1, 1, 'ira@example.com');</code></pre>
+
+  <p>Повтори первый эксперимент — площадка снова переименовывается:</p>
+
+  <pre><code>UPDATE venues SET name = 'Палац Спорту (МВЦ)' WHERE id = 1;</code></pre>
+
+  <pre><code>UPDATE 1</code></pre>
+
+  <p><code>UPDATE 1</code> — вот и весь результат нормализации. Не «стало красиво», а <strong>одна строка вместо неизвестно скольких</strong>, и переехать наполовину больше физически нечему. Аномалия вставки исчезла там же: площадку без концертов теперь можно завести, потому что у факта «существует площадка» появилось своё место. Удали продажу — площадка останется.</p>
+
+  <p>А теперь главное. Продай место, которое уже продано:</p>
+
+  <pre><code>INSERT INTO sold_seats (event_id, seat_id, ticket_type_id, buyer_email)
+VALUES (1, 1, 1, 'oleh@example.com');</code></pre>
+
+  <pre><code>ERROR:  duplicate key value violates unique constraint "sold_seats_pkey"
+DETAIL:  Key (event_id, seat_id)=(1, 1) already exists.</code></pre>
+
+  <div class="callout win">
+    <span class="label">Вот ради чего всё</span>
+    <p>Инвариант всего проекта — «два человека не окажутся на одном кресле» — только что уместился в <code>PRIMARY KEY (event_id, seat_id)</code>. Ни строчки кода, ни транзакции, ни блокировки. И работает он против <strong>любого</strong> запроса: твоего сервиса, чужой миграции, ручного <code>INSERT</code> в психе на проде в три часа ночи.</p>
+  </div>
+
+  <p>Сравни с тем, что было до разложения: там это правило пришлось бы держать кодом, а значит — держать блокировками, а значит — в M4 разбираться с гонками, которых можно было не создавать. <strong>Нормализация решает, что вообще можно защитить constraint'ом</strong>, а всё, что нельзя, ты потом всю жизнь защищаешь руками.</p>
+
+  <h2>Где нормализация заканчивается и начинается решение</h2>
+
+  <p>Теперь вопрос, на котором нормализация становится инженерным решением, а не гигиеной. Страница концерта показывает «осталось 47 мест». В нормализованной схеме это <code>COUNT(*)</code> по свободным местам при каждом открытии страницы — а страницу при старте продаж открывают десять тысяч человек одновременно.</p>
+
+  <p>Поэтому в плане стоит <code>M1-12</code>: счётчик <code>Inventory.available</code>. Это <strong>сознательное нарушение</strong> того, что ты только что выучил: факт «сколько свободно» будет записан дважды — строками мест и числом в счётчике. Две копии одного факта расходятся — это закон, и ты его сегодня видел своими глазами.</p>
+
+  <p>Копия факта допустима ровно при трёх условиях, и на ревью я спрошу все три:</p>
+
+  <ol>
+    <li><strong>Есть ADR с ценой.</strong> Не «так быстрее», а что именно ускорилось, на каких числах измерено и чем ты за это платишь.</li>
+    <li><strong>Есть механизм, который держит копии честными.</strong> Счётчик меняется в той же транзакции, что и места, плюс <code>CHECK (available &gt;= 0)</code> — чтобы расхождение падало ошибкой, а не тихо уезжало в минус.</li>
+    <li><strong>Есть способ обнаружить расхождение.</strong> В <a href="../CONTEXT.md">CONTEXT.md</a> он уже назван: <strong>Reconciliation</strong> — сумма (проданные + удержанные + свободные) обязана равняться вместимости. В M8 это станет метрикой, которая орёт до того, как позвонит покупатель.</li>
+  </ol>
+
+  <p>Денормализация без этих трёх пунктов — не оптимизация, а баг с отложенным сроком. Разница между инженером и «так получилось» здесь ровно в том, что решение записано и у него названа цена.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 3 из 3</span>
+    <p class="q">Ты добавил в плоскую <code>sales</code> суррогатный <code>id bigserial PRIMARY KEY</code>. Что изменилось?</p>
+    <div class="options">
+      <button>Таблица пришла в 2NF: у неё появился неразложимый ключ</button>
+      <button>Таблица пришла в 3NF: зависимости теперь идут от одной колонки</button>
+      <button data-correct>Ничего: зависимости между колонками остались прежними</button>
+      <button>Исчезла аномалия вставки: строку можно завести без концерта</button>
+    </div>
+    <p class="explain" hidden>Суррогатный ключ добавляет колонку, а не убирает зависимости: <code>venue_city</code> как зависел от <code>venue_name</code>, так и зависит. Он был в таблице с самого начала эксперимента — и все три аномалии ты получил при нём. Это самая частая подмена: «у меня везде <code>id</code>, значит схема нормализована».</p>
+  </div>
+
+  <h2>Прибраться</h2>
+
+  <pre><code>DROP SCHEMA lesson0005 CASCADE;</code></pre>
+
+  <h2>Задание</h2>
+
+  <ol class="steps">
+    <li>Прогони оба опыта целиком. Мне нужны два вывода: <code>SELECT DISTINCT venue_name</code> после удаления покупателя (площадка, исчезнувшая вместе с продажей) и <code>ERROR: duplicate key ... sold_seats_pkey</code> из опыта 2.</li>
+    <li>Одной фразой: почему <code>id bigserial PRIMARY KEY</code> в <code>sales</code> не убрал ни одной из трёх аномалий. Ответ короткий, но должен содержать слово «зависит».</li>
+    <li>Открой <a href="../CONTEXT.md">CONTEXT.md</a> и выпиши таблицей: сущность → её ключ → один факт, который зависит <strong>от всего ключа</strong>. Достаточно пяти сущностей, но среди них обязаны быть <code>Hold</code> и <code>Inventory</code> — на них ключ неочевиден, и именно там ты в M1 ошибёшься, если не подумаешь сейчас.</li>
+    <li><strong>Главное.</strong> Сделай <code>M1-02</code>: ER-диаграмма в Mermaid в <code>docs/</code>, сверенная с <code>CONTEXT.md</code>. У каждой связи подписана cardinality (1:1 / 1:N / N:M). Проверка, которую я применю на ревью: <em>для каждой подписи покажи, какой строкой DDL она будет доказана</em>. «N:M» без таблицы-связки и «1:1» без <code>UNIQUE</code> — это комментарий, а не схема.</li>
+    <li>Найди в своей диаграмме место, где ты уже заложил денормализацию (оно там будет — как минимум <code>Inventory</code>), и напиши по нему три пункта из раздела про <code>M1-12</code>: цена, механизм, способ обнаружить расхождение. Это черновик ADR, набело оформишь в <code>M1-12</code>.</li>
+    <li><code>M1-01</code> (выбор data layer) — твоё решение, урока на него нет и не будет: аргументы у тебя уже есть, а спорить я буду с готовым ADR. Диаграмму из пункта 4 можно рисовать независимо от него.</li>
+  </ol>
+
+  <div class="callout">
+    <span class="label">Перед M1-05</span>
+    <p>Когда дойдёшь до миграции <code>holds</code>, перечитай <a href="./0003-rule-the-database-cannot-see.html">урок 0003</a> — это уже стоит в ROADMAP. Сегодня ты видел, как схема <em>даёт</em> базе возможность что-то запретить. Там будет случай, когда одной схемы мало и конфликт приходится материализовать специально.</p>
+  </div>
+
+  <div class="footer">
+    <h2 id="src">Первоисточники</h2>
+    <ul>
+      <li><strong>Читать в первую очередь:</strong> <a href="https://www.bkent.net/Doc/simple5.htm">William Kent — A Simple Guide to Five Normal Forms in Relational Database Theory</a> (1983). Восемь страниц без единой формулы, оттуда же присяга про «the key, the whole key, and nothing but the key». Прочти целиком — это дешевле любого учебника.</li>
+      <li><a href="https://www.postgresql.org/docs/current/ddl-constraints.html">PostgreSQL — Constraints</a>: <code>CHECK</code>, <code>UNIQUE</code>, <code>PRIMARY KEY</code>, <code>FOREIGN KEY</code> и <code>ON DELETE</code>. Глава короткая, а <code>M1-06</code> и <code>M1-08</code> — целиком по ней.</li>
+      <li><a href="https://www.postgresql.org/docs/current/indexes-partial.html">PostgreSQL — Partial Indexes</a>. Понадобится в <code>M1-10</code>: soft delete ломает обычный <code>UNIQUE</code>, и чинится это partial index'ом, а не кодом.</li>
+      <li><a href="https://www.postgresql.org/docs/current/datatype-numeric.html">PostgreSQL — Numeric Types</a>, раздел про <code>numeric</code> и floating-point. Ответ на вопрос «почему деньги не <code>double precision</code>» — там, в предупреждении про неточность.</li>
+      <li><a href="https://www.postgresql.org/docs/current/datatype-datetime.html">PostgreSQL — Date/Time Types</a>: чем <code>timestamptz</code> отличается от <code>timestamp</code>. У нас концерты в разных часовых поясах, так что это не теория.</li>
+      <li>Глубже, если понравилось: <a href="https://dl.acm.org/doi/10.1145/362384.362685">E. F. Codd — A Relational Model of Data for Large Shared Data Banks</a> (1970). Статья, с которой началось всё, включая слово «нормализация».</li>
+    </ul>
+
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="./0003-rule-the-database-cannot-see.html">Урок 0003 — Правило, которое база не видит</a></li>
+      <li><a href="./0001-race-for-the-last-ticket.html">Урок 0001 — Гонка за последним билетом</a></li>
+      <li><a href="../CONTEXT.md">CONTEXT.md</a> — единый язык: имена таблиц берутся оттуда, а не выдумываются в миграции</li>
+      <li><a href="../reference/ddd-tactical.html">Reference: тактический DDD</a> — понадобится с <code>M1-13</code></li>
+      <li><a href="../ROADMAP.md">ROADMAP → M1</a> — весь список issue этапа</li>
+    </ul>
+
+    <div class="ask">
+      Жду пункты 1, 2 и 4. Пункт 4 — тот, который стоит времени: ER-диаграмма это единственная вещь в M1, которую дёшево переделать. Миграцию, написанную по неправильной диаграмме, ты будешь чинить весь M4.
+    </div>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
