@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASS}
+      POSTGRES_DB: ${POSTGRES_NAME}
+    ports:
+      - '5433:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_NAME}']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - nest_network
+  redis:
+    image: redis:8.10.1
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "6378:6379"
+    command: redis-server --requirepass ${REDIS_PASS} --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASS" --no-auth-warning ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - nest_network
+  api:
+    restart: unless-stopped
+    stop_grace_period: 30s
+    build:
+      context: .
+      target: development
+    env_file:
+      - .env
+    environment:
+      POSTGRES_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASS}@postgres:5432/${POSTGRES_NAME}
+      REDIS_URL: redis://:${REDIS_PASS}@redis:6379
+      PORT: ${PORT}
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/usr/src/app
+      # keep the image's own dependency trees: the host ones are pnpm symlinks
+      # into a store that does not exist inside the container
+      - /usr/src/app/node_modules
+      - /usr/src/app/apps/server/node_modules
+    networks:
+      - nest_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  nest_network:
+    driver: bridge
+

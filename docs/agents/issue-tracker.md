@@ -9,6 +9,31 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` — never a single combined tickets file
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- An issue moving to `ready-for-human` carries a `## План работ` section — see below
+
+## План работ
+
+Каждый issue, уходящий в `ready-for-human`, получает секцию `## План работ`: чекбоксы
+`- [ ]`, у каждого пункта — наблюдаемый признак готовности строкой *«Готово, когда: …»*.
+Признак должен быть виден в терминале или в тесте, а не проверяться на глаз.
+
+План читается как **business requirements**: он говорит, что должно стать правдой и в каком
+порядке. Он не говорит, как это написать, и **готового кода реализации в нём нет** — режим
+работы проекта из `CLAUDE.md` не отменяется. Границу держать так: «подключить X через хук
+`genReqId`» — можно, это уровень документации; готовый файл с реализацией — нельзя.
+
+Что ещё входит в пункт, когда уместно:
+
+- **Ловушка**, о которую спотыкаются, делая это первый раз, — прямо в тексте пункта, а не
+  в конце issue
+- **Точка решения**, если у пункта несколько правильных ответов: сказать, что выбор за
+  Романом, и потребовать назвать его на ревью
+- Отдельными пунктами в конце — **мутация** (проверить, что тест кусается) и **гейты**
+  (`format:check`, `lint`, `typecheck`, `test`) перед ревью
+
+Порядок пунктов — рабочий, а не логический: следующий шаг опирается на то, что предыдущий
+уже видно. Роман отмечает выполненное прямо в файле, и на ревью обе стороны ссылаются на
+номер пункта.
 
 ## When a skill says "publish to the issue tracker"
 
