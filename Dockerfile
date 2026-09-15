@@ -6,8 +6,11 @@
 FROM node:26-alpine AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH"
-# Corepack is no longer bundled with the Node distribution, install pnpm directly
-RUN npm install --global pnpm@10.10.0
+# Corepack is no longer bundled with the Node distribution, install pnpm directly.
+# Version must match "packageManager" in the root package.json: pnpm 10+ manages its
+# own version and would otherwise try to download the pinned build at runtime, which
+# fails on alpine (the self-managed artifact is linked against glibc, not musl).
+RUN npm install --global pnpm@12.4.1
 WORKDIR /usr/src/app
 
 # -----------------------------------------------------------------------------

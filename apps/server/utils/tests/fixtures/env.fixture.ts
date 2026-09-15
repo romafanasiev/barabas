@@ -5,6 +5,7 @@ export type RawEnv = Record<string, string>;
 export function makeRequiredRawEnv(overrides: Partial<RawEnv> = {}): RawEnv {
   return {
     POSTGRES_URL: `postgres://${faker.internet.username()}:${faker.internet.password()}@localhost:5432/${faker.word.noun()}`,
+    REDIS_URL: `redis://${faker.internet.password()}@localhost:6378`,
     ...overrides,
   };
 }

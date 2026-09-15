@@ -9,6 +9,8 @@ export const envSchema = z.object({
 
   POSTGRES_URL: z.url(),
 
+  REDIS_URL: z.url(),
+
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent'])
     .default('info'),

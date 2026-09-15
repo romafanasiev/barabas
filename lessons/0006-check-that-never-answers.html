@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Урок 0006 — Проверка, которая не отвечает</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Урок 0006 · этап M0 · эксплуатация</p>
+  <h1>Проверка, которая не отвечает</h1>
+  <p class="standfirst">Health check выглядит как задача на полчаса: два роута, два <code>SELECT 1</code>, готово. Сегодня ты сломаешь её тремя способами в терминале и увидишь, что настоящая работа в <code>M0-05</code> — не в проверках, а в таймауте, который умеет отменять, и в одном вопросе, который решает, какая проверка в какой эндпоинт попадает.</p>
+  <div class="meta">
+    <span>≈ 30 минут</span>
+    <span>Только Node и curl, без Docker и без базы</span>
+    <span>Ведёт к M0-05, M0-06, M8-09</span>
+  </div>
+
+  <h2>Сначала вспомни</h2>
+
+  <p>Без подглядывания в прошлые уроки.</p>
+
+  <div class="quiz">
+    <span class="label">Recall · 1 из 2</span>
+    <p class="q">Зачем контекстному логгеру фолбэк на корневой, если <code>getStore()</code> пуст?</p>
+    <div class="options">
+      <button>Затем, что корневой логгер дешевле child-логгера по памяти</button>
+      <button data-correct>Затем, что код вне HTTP-запроса тоже обязан писать логи</button>
+      <button>Затем, что <code>run()</code> теряет контекст на вложенных <code>await</code></button>
+      <button>Затем, что pino не пишет строку без привязанных к ней полей</button>
+    </div>
+    <p class="explain" hidden>Контекст живёт только внутри <code>run()</code>. Всё, что начинается не с HTTP-запроса — bootstrap, cron, обработчик сигнала, — выполняется без store, и <code>getStore()</code> там честно вернёт <code>undefined</code>. Сегодняшний health check — как раз такой код: первые строки он пишет до того, как придёт хоть один запрос.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Recall · 2 из 2</span>
+    <p class="q">По какому признаку видно, что строку таблицы пора разбивать на несколько?</p>
+    <div class="options">
+      <button>В строке есть колонка, значение которой повторяется в других строках</button>
+      <button>В строке есть колонка, которую приходится обновлять чаще остальных</button>
+      <button data-correct>В строке живут несколько фактов, которые рождаются в разное время</button>
+      <button>В строке набралось столько колонок, что она уходит в TOAST целиком</button>
+    </div>
+    <p class="explain" hidden>Повтор значения — следствие, а не причина: он возникает именно потому, что факт «существует площадка» приклеен к факту «состоялась продажа». Разное время рождения и смерти — вот признак, который работает без формул. Сегодня ты применишь ровно тот же приём к эндпоинтам: разные последствия — разные эндпоинты.</p>
+  </div>
+
+  <h2>Задача на один абзац</h2>
+
+  <p><code>M0-05</code> просит два роута. <code>GET /health</code> — liveness, процесс жив. <code>GET /health/ready</code> — readiness, могу обслуживать трафик, и для этого хожу в PostgreSQL и Redis. Разница выглядит как разница в глубине проверки: один поверхностный, другой основательный. Это неверное понимание, и оно стоит дороже всего, что ты сегодня напишешь.</p>
+
+  <p>Начнём с конца — с того, что случается, когда зависимость умирает <strong>невежливо</strong>. Не «соединение разорвано», а «сервер принял соединение и замолчал»: так выглядит перегруженный Postgres, так выглядит виртуалка, у которой отобрали CPU, так выглядит сетевой сплит. Соединение живое, ответа нет.</p>
+
+  <h2>Опыт 1: зависимость, которая молчит</h2>
+
+  <p>Создай папку вне репозитория и положи туда два файла. Никаких зависимостей, только Node.</p>
+
+  <p class="filename">blackhole.mjs — «зависимость», которая принимает соединения и не отвечает</p>
+  <pre><code>import net from 'node:net';
+
+let open = 0;
+
+net
+  .createServer((socket) =&gt; {
+    open += 1;
+    console.log(`принял соединение, отвечать не буду. Открыто: ${open}`);
+    socket.resume();                 // см. сноску ниже — без этого опыт 3 не сработает
+    socket.on('error', () =&gt; {});
+    socket.on('close', () =&gt; {
+      open -= 1;
+      console.log(`соединение закрыто. Открыто: ${open}`);
+    });
+  })
+  .listen(7777, () =&gt; console.log('blackhole слушает 7777'));</code></pre>
+
+    <div class="callout">
+    <span class="label">Что делает <code>socket.resume()</code></span>
+    <p>Сокет без подписки на <code>data</code> находится в <em>paused</em>-режиме: входящие байты лежат в буфере непрочитанными, и закрытие с той стороны такой сокет замечает не сразу. Нам это помешало бы в третьем опыте — счётчик не уменьшался бы, хотя соединение уже разорвано. <code>resume()</code> заставляет поток читать и выбрасывать данные, и события приходят вовремя. Заодно пустой обработчик <code>error</code>: закрытие через <code>destroy()</code> прилетает сюда как <code>ECONNRESET</code>, а необработанное событие <code>error</code> на сокете роняет процесс.</p>
+  </div>
+
+  <p class="filename">app.mjs — приложение с двумя эндпоинтами</p>
+  <pre><code>import http from 'node:http';
+import net from 'node:net';
+
+// наивная проверка: подключиться и дождаться ответа
+function ping() {
+  return new Promise((resolve, reject) =&gt; {
+    const socket = net.connect(7777, '127.0.0.1', () =&gt; socket.write('PING\r\n'));
+    socket.once('data', () =&gt; {
+      socket.end();
+      resolve('pong');
+    });
+    socket.once('error', reject);
+  });
+}
+
+const json = (res, code, body) =&gt; {
+  res.writeHead(code, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+};
+
+http
+  .createServer(async (req, res) =&gt; {
+    if (req.url === '/health') {
+      return json(res, 200, { status: 'ok' });
+    }
+    if (req.url === '/health/ready') {
+      try {
+        await ping();
+        return json(res, 200, { status: 'ok', dep: 'up' });
+      } catch (err) {
+        return json(res, 503, { status: 'error', dep: 'down', reason: err.message });
+      }
+    }
+    json(res, 404, { status: 'not found' });
+  })
+  .listen(3000, () =&gt; console.log('app слушает 3000'));</code></pre>
+
+  <p>Три терминала: в первом <code>node blackhole.mjs</code>, во втором <code>node app.mjs</code>, в третьем — curl.</p>
+
+  <div class="terminals">
+    <div>
+      <p class="filename">Терминал C · liveness</p>
+<pre><code>$ curl -i -m 5 localhost:3000/health
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"status":"ok"}
+
+# мгновенно</code></pre>
+    </div>
+    <div>
+      <p class="filename">Терминал C · readiness</p>
+<pre><code>$ curl -i -m 5 localhost:3000/health/ready
+
+
+curl: (28) Operation timed out
+after 5001 milliseconds with
+0 bytes received
+
+
+# ни кода, ни тела</code></pre>
+    </div>
+  </div>
+
+  <p>А в первом терминале — одна строка: <code>принял соединение, отвечать не буду. Открыто: 1</code>. И она там осталась: curl сдался, а соединение живо.</p>
+
+  <div class="callout warn">
+    <span class="label">Смотри внимательно</span>
+    <p>Твой эндпоинт не ответил «плохо». Он <strong>не ответил</strong>. Решение, сколько ждать, принял curl — своей опцией <code>-m 5</code>, про которую ты ничего не знаешь. Убери её, и он будет ждать столько, сколько разрешит операционная система: минуты.</p>
+  </div>
+
+  <p>В проде вместо curl — проба оркестратора, и у неё свои умолчания. В Kubernetes у пробы есть <code>timeoutSeconds</code> (по умолчанию <code>1</code>), <code>periodSeconds</code> (<code>10</code>) и <code>failureThreshold</code> (<code>3</code>). То есть под уедет из балансировки примерно через тридцать секунд после смерти зависимости — и ровно столько же времени на него будет литься трафик. Твоя проверка, которая «честно проверяет», в этой картине не участвует: она не успела ничего сказать ни разу.</p>
+
+  <p>И обрати внимание на вторую половину: за эти тридцать секунд проба сходила три раза, и три соединения к мёртвой зависимости остались открытыми внутри твоего процесса. Это уже не про честность ответа, это про утечку.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 1 из 3</span>
+    <p class="q">Что главного не так с проверкой, у которой нет таймаута?</p>
+    <div class="options">
+      <button>Она отвечает медленнее, чем оркестратор успевает опросить её снова</button>
+      <button data-correct>Срок ожидания выбирает тот, кто спрашивает, а не тот, кто отвечает</button>
+      <button>Она удерживает соединение из пула дольше, чем длится сам запрос</button>
+      <button>Она отдаёт код <code>200</code> раньше, чем зависимость успела ответить</button>
+    </div>
+    <p class="explain" hidden>Проверка без таймаута не отдаёт ни <code>200</code>, ни <code>503</code> — она не отдаёт ничего, и весь смысл эндпоинта теряется: «не ответил за N секунд» — это ответ клиента самому себе, а не твоя диагностика. Удержание соединения — тоже правда, но это следствие, и с ним мы разберёмся в следующем опыте.</p>
+  </div>
+
+  <h2>Опыт 2: таймаут, который перестаёт ждать, но ничего не отменяет</h2>
+
+  <p>Очевидное лекарство — <code>Promise.race</code>. Добавь в <code>app.mjs</code> и замени вызов <code>ping()</code> на <code>raceTimeout(ping(), 300)</code>:</p>
+
+  <pre><code>const timeout = (ms) =&gt;
+  new Promise((_, reject) =&gt; setTimeout(() =&gt; reject(new Error(`timeout ${ms}ms`)), ms));
+
+const raceTimeout = (promise, ms) =&gt; Promise.race([promise, timeout(ms)]);</code></pre>
+
+  <p>Перезапусти <code>app.mjs</code> и запусти опрос — как это делал бы оркестратор, только чаще, чтобы не ждать:</p>
+
+  <pre><code>$ while true; do curl -s -o /dev/null -w "%{http_code} " localhost:3000/health/ready; sleep 0.5; done
+503 503 503 503 503 503 503 503 503 503 503 503</code></pre>
+
+  <p>Выглядит как победа: быстрый честный отказ, код правильный, тело с причиной. Теперь посмотри в терминал с <code>blackhole.mjs</code>.</p>
+
+  <pre><code>принял соединение, отвечать не буду. Открыто: 1
+принял соединение, отвечать не буду. Открыто: 2
+принял соединение, отвечать не буду. Открыто: 3
+...
+принял соединение, отвечать не буду. Открыто: 24</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Вот оно</span>
+    <p>Ни одной строки <code>соединение закрыто</code>. Эндпоинт отвечает за 300 мс, а счётчик растёт линейно и не падает никогда. <code>Promise.race</code> вернул управление — и <strong>только</strong>. Проигравший промис не отменён, сокет открыт, <code>ping()</code> всё ещё ждёт своё <code>data</code>.</p>
+  </div>
+
+  <p>Промис в JavaScript — это не задача, которую можно остановить. Это уведомление о результате. <code>Promise.race</code> выбирает, какое уведомление ты слушаешь, и не имеет ни малейшего доступа к работе, которая за ним стоит. Всё, что ты сделал, — перестал ждать. Работа продолжается.</p>
+
+  <p>Посчитай цену на живом примере. Проба ходит раз в 10 секунд, зависимость лежит 30 минут — это 180 повисших соединений и 180 неотпущенных сокетов в процессе, который снаружи выглядит абсолютно здоровым: он же отвечает. С настоящим драйвером всё жёстче: у <code>pg.Pool</code> по умолчанию <code>max: 10</code>, и десятая повисшая проверка заберёт последнее соединение из пула. Дальше твой health check не пустит в базу боевые запросы — те самые, ради которых приложение существует. Проверка начнёт ронять приложение.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 2 из 3</span>
+    <p class="q">Почему <code>Promise.race</code> с таймером не решает задачу таймаута?</p>
+    <div class="options">
+      <button>Потому что таймер продолжает тикать и будит процесс после ответа</button>
+      <button>Потому что гонка отдаёт первое значение, а нужно последнее по времени</button>
+      <button data-correct>Потому что проигравшая работа не отменяется и держит свой ресурс</button>
+      <button>Потому что таймер не сработает, пока event loop занят другой работой</button>
+    </div>
+    <p class="explain" hidden>Незакрытый таймер — реальная мелкая проблема (лечится <code>clearTimeout</code>), но она не про ресурс зависимости. Промис — уведомление о результате, а не ручка управления работой: отказавшись слушать, ты ничего не остановил. Отменять умеет только тот, кто владеет ресурсом, — сокет, драйвер или сервер.</p>
+  </div>
+
+  <h2>Опыт 3: таймаут, который отменяет</h2>
+
+  <p>Разница в одной строке — <code>socket.destroy()</code>. Замени <code>ping()</code> целиком:</p>
+
+  <pre><code>function ping(ms) {
+  return new Promise((resolve, reject) =&gt; {
+    const socket = net.connect(7777, '127.0.0.1', () =&gt; socket.write('PING\r\n'));
+
+    const timer = setTimeout(() =&gt; {
+      socket.destroy();                       // вот это и есть отмена
+      reject(new Error(`timeout ${ms}ms`));
+    }, ms);
+
+    socket.once('data', () =&gt; {
+      clearTimeout(timer);
+      socket.end();
+      resolve('pong');
+    });
+    socket.once('error', (err) =&gt; {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}</code></pre>
+
+  <p>Перезапусти, включи тот же опрос и смотри в терминал <code>blackhole.mjs</code>:</p>
+
+  <pre><code>принял соединение, отвечать не буду. Открыто: 1
+соединение закрыто. Открыто: 0
+принял соединение, отвечать не буду. Открыто: 1
+соединение закрыто. Открыто: 0</code></pre>
+
+  <div class="callout win">
+    <span class="label">Вот ради чего всё</span>
+    <p>Снаружи ничего не изменилось: те же <code>503</code>, те же 300 мс. Изменилось то, чего не видно из ответа, — процесс перестал накапливать последствия собственных проверок. Именно поэтому в плане <code>M0-05</code> пункт 8 сформулирован как отдельная работа, а не как «оберни в <code>Promise.race</code>».</p>
+  </div>
+
+  <h2>Два сорта таймаута — и что из этого писать в драйвере</h2>
+
+  <p>Обобщи то, что ты увидел. Таймаут бывает двух сортов, и они не взаимозаменяемы:</p>
+
+  <ul>
+    <li><strong>Перестать ждать.</strong> Ты возвращаешь ответ по таймеру. Работа продолжается у того, кто её делает.</li>
+    <li><strong>Прекратить работу.</strong> Ресурс освобождается: сокет уничтожен, statement прерван, соединение выкинуто из пула.</li>
+  </ul>
+
+  <p>Самое неприятное открытие ждёт тебя в документации драйверов: настройка с честным словом <code>timeout</code> в названии сплошь и рядом относится к первому сорту. Вот что на самом деле делают те настройки, которые тебе понадобятся в <code>M0-05</code> (проверено по исходникам, а не по названиям):</p>
+
+  <table>
+    <thead>
+      <tr><th>Настройка</th><th>Где живёт</th><th>Что происходит по истечении</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>connectionTimeoutMillis</code> (pg)</td>
+        <td>клиент</td>
+        <td>сокет уничтожается, вызов падает с <code>Connection terminated due to connection timeout</code></td>
+      </tr>
+      <tr>
+        <td><code>query_timeout</code> (pg)</td>
+        <td>клиент</td>
+        <td>ошибка <code>Query read timeout</code>. <strong>Отмена на сервер не отправляется</strong> — запрос там продолжает выполняться</td>
+      </tr>
+      <tr>
+        <td><code>statement_timeout</code> (pg → PostgreSQL)</td>
+        <td>сервер</td>
+        <td>PostgreSQL сам прерывает statement и возвращает ошибку</td>
+      </tr>
+      <tr>
+        <td><code>commandTimeout</code> (ioredis)</td>
+        <td>клиент</td>
+        <td>таймер на каждую команду, по нему команда отбивается ошибкой</td>
+      </tr>
+      <tr>
+        <td><code>enableOfflineQueue: false</code> (ioredis)</td>
+        <td>клиент</td>
+        <td>команда без живого соединения падает сразу: <code>Stream isn't writeable…</code>, а не ждёт реконнекта</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="label">Умолчания, которые стоит знать наизусть</span>
+    <p>В <code>pg</code> по умолчанию выключено <strong>всё</strong>: <code>statement_timeout: false</code>, <code>query_timeout: false</code>, <code>connect_timeout: 0</code>. То есть «из коробки» драйвер ждёт вечно на всех трёх уровнях. В <code>ioredis</code> <code>maxRetriesPerRequest</code> равен <code>20</code> — висящая команда отобьётся сама после двадцати неудачных реконнектов, а если поставить <code>null</code>, будет ждать вечно.</p>
+  </div>
+
+  <p>Для readiness из этого следует конкретный набор. <code>SELECT 1</code> не бывает долгим — значит главный враг не «тяжёлый запрос», а мёртвый сокет и занятый пул. Поэтому <code>connectionTimeoutMillis</code> здесь важнее, чем <code>statement_timeout</code>, а <code>query_timeout</code> в одиночку недостаточен: он вернёт тебе ответ и оставит запрос жить на сервере. И держи в голове ещё одно: <code>pool.query()</code> ждёт свободного соединения молча — если все десять заняты повисшими проверками, твой таймаут внутри индикатора даже не начнёт тикать.</p>
+
+  <h2>Вопрос, который решает, что куда класть</h2>
+
+  <p>Теперь вторая половина урока — та, ради которой эндпоинтов два, а не один. Разница между liveness и readiness не в глубине проверки. Она в том, <strong>что сделает оркестратор с твоим ответом</strong>.</p>
+
+  <ul>
+    <li><strong>Liveness провалился</strong> → kubelet убивает контейнер и запускает заново.</li>
+    <li><strong>Readiness провалился</strong> → под убирают из endpoints сервиса. Процесс живёт, трафик не идёт.</li>
+  </ul>
+
+  <p>Представь десять подов и Postgres, который моргнул на сорок секунд. Если <code>/health</code> ходит в базу, происходит вот что: три подряд неудачные пробы по 10 секунд — и kubelet убивает все десять контейнеров почти одновременно. Они стартуют, разом открывают пулы (десять подов × <code>max: 10</code> — это сто соединений в первую секунду, при <code>max_connections</code> по умолчанию тоже сто), база, которая только-только встала, получает шторм и снова не отвечает. Пробы снова красные, снова рестарт, <code>CrashLoopBackOff</code>. Перезапуск не чинил проблему ни разу — он её усиливал.</p>
+
+  <p>И отдельно обидное: вместе с процессом ты каждый раз выбрасываешь всё, что могло бы объяснить причину, — прогретые кеши, незавершённые запросы и те самые логи с <code>requestId</code>, за которые ты воевал в <a href="./0004-log-signed-with-someone-elses-name.html">уроке 0004</a>.</p>
+
+  <div class="callout">
+    <span class="label">Главное</span>
+    <p>Liveness отвечает ровно на один вопрос: <strong>поможет ли здесь перезапуск?</strong> Если ответ «нет» — проверке не место в liveness, какой бы важной она ни была. Внешняя зависимость перезапуском не чинится никогда. Это и есть критерий — не «лёгкая проверка против тяжёлой».</p>
+  </div>
+
+  <p>У readiness обратное свойство, и оно ценное: отказ обратим сам собой. База вернулась — проба позеленела, под вернулся в балансировку, вмешательства не потребовалось. Поэтому «проверять зависимости» — это про readiness по определению, а не по традиции.</p>
+
+  <p>Третий вид проб, <code>startupProbe</code>, существует ровно по этой же логике: он прикрывает медленный старт, чтобы liveness не убил процесс раньше, чем тот успел подняться. Тебе он в <code>M0-05</code> не нужен, но знать про него стоит — на собеседовании спрашивают именно тройку.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 3 из 3</span>
+    <p class="q">Почему проверку соединения с базой нельзя класть в liveness?</p>
+    <div class="options">
+      <button>Потому что база уже проверена в readiness, а дублировать проверки незачем</button>
+      <button>Потому что проверка базы делает liveness медленнее интервала опроса пробы</button>
+      <button data-correct>Потому что отказом liveness ты просишь перезапуск, а он базу не чинит</button>
+      <button>Потому что оркестратор читает у liveness только код ответа, но не его тело</button>
+    </div>
+    <p class="explain" hidden>Дублирование само по себе безвредно — вредно последствие. Ответ liveness — это не отчёт о здоровье, это запрос на перезапуск контейнера. Отвечая <code>503</code> из-за чужой базы, ты просишь оркестратор сделать то, что не помогает и усиливает отказ: перезапустить сразу все инстансы, которые упрутся в ту же базу.</p>
+  </div>
+
+  <h2>Зачем это на самом деле — мост в M0-06</h2>
+
+  <p>Ты сейчас выучил не «как приделать два роута». Ты выучил, что readiness — это <strong>ручка управления трафиком</strong>, а не отчёт. Как только это в голове, следующий issue становится очевидным.</p>
+
+  <p><code>M0-06</code> — graceful shutdown. Процесс получил <code>SIGTERM</code>. Наивный порядок: закрыть сервер, закрыть пул, выйти. И он порождает 502 у покупателя, потому что балансировщик узнаёт об уходе пода не мгновенно — он узнаёт от readiness, с задержкой в целый период опроса. Правильный порядок начинается не с закрытия, а с <strong>лжи во спасение</strong>: readiness начинает отдавать <code>503</code>, ты ждёшь один-два периода опроса, трафик перестаёт приходить — и только теперь закрываешь пул и сервер.</p>
+
+  <p>Поэтому health check делается раньше graceful shutdown, а не наоборот: без ручки readiness останавливать приложение аккуратно просто нечем. А ещё дальше, в <code>M8</code>, результат пробы станет метрикой — и вопрос «сколько минут за неделю инстанс был not ready» окажется одним из немногих, на которые бизнес реагирует сразу.</p>
+
+  <h2>Прибраться</h2>
+
+  <p>Останови оба процесса и удали папку с опытами — в репозиторий они не едут.</p>
+
+  <h2>Задание</h2>
+
+  <ol class="steps">
+    <li>Прогони все три опыта руками. Потом объясни мне в одной фразе: почему в опыте 3 счётчик возвращается к нулю, а в опыте 2 — нет, если снаружи оба отвечают одинаково и за одинаковое время. Ответ короткий, но точный.</li>
+    <li>Выбери значение таймаута для своих индикаторов (пункт 8 плана) и <strong>обоснуй его числами</strong>: свяжи с <code>timeoutSeconds</code> и <code>periodSeconds</code> пробы. Запиши выбор и причину в <code>## Comments</code> у <code>M0-05</code> до того, как начнёшь писать код.</li>
+    <li>Там же реши заранее пункт 9: чем гасить зависимость в e2e — <code>overrideProvider</code> или реальной остановкой контейнера. Одна строка «почему». Решение до кода, иначе оно подстроится под то, что получилось написать.</li>
+    <li><strong>Главное.</strong> Сделай пункты 2–7 плана <code>M0-05</code>: <code>REDIS_URL</code> в схему, пул и клиент как провайдеры, liveness, два своих индикатора на <code>HealthIndicatorService</code>, <code>/health/ready</code> через <code>HealthCheckService</code>.</li>
+    <li>Пункт 8 — таймаут. Покажи мне, что он <strong>отменяет</strong>, а не просто перестаёт ждать: назови конкретную настройку драйвера, которую поставил, и скажи, к какому из двух сортов она относится.</li>
+    <li>Пункт 11 — мутация. Замени настоящий <code>SELECT 1</code> на проверку «объект пула не null», убедись, что тест на <code>503</code> краснеет, откати. Пришли вывод обоих прогонов.</li>
+    <li>Ответь одной строкой: если поставить <code>enableOfflineQueue: false</code>, что изменится в ответе <code>/health/ready</code> при выключенном Redis — и почему <code>commandTimeout</code> всё равно остаётся нужен.</li>
+  </ol>
+
+  <div class="footer">
+    <h2 id="src">Первоисточники</h2>
+    <ul>
+      <li><strong>Читать в первую очередь:</strong> <a href="https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/">Kubernetes — Configure Liveness, Readiness and Startup Probes</a>. Нужны разделы про три вида проб и таблица параметров: <code>periodSeconds</code>, <code>timeoutSeconds</code>, <code>failureThreshold</code>. Оттуда же — умолчания, которые я приводил в уроке.</li>
+      <li><a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-probes">Kubernetes — Pod Lifecycle, Container probes</a>: одно предложение про то, что делает kubelet при провале каждой из проб. Это весь сегодняшний раздел про каскад, в двух абзацах первоисточника.</li>
+      <li><a href="https://node-postgres.com/apis/pool">node-postgres — Pool</a> и <a href="https://node-postgres.com/apis/client">Client</a>: <code>connectionTimeoutMillis</code>, <code>idleTimeoutMillis</code>, <code>max</code>, <code>query_timeout</code>, <code>statement_timeout</code>. Заодно открой <code>packages/pg/lib/client.js</code> в репозитории и найди строку <code>Query read timeout</code> — там видно своими глазами, что отмена на сервер не уходит.</li>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config-client.html">PostgreSQL — Client Connection Defaults</a>, параметр <code>statement_timeout</code>. Это второй сорт таймаута в чистом виде.</li>
+      <li><a href="https://github.com/redis/ioredis#auto-reconnect">ioredis — Auto-reconnect</a> и опции <code>commandTimeout</code>, <code>enableOfflineQueue</code>, <code>maxRetriesPerRequest</code>. Ключевое предложение про <code>null</code>: «let commands wait forever until the connection is alive again».</li>
+      <li><a href="https://docs.nestjs.com/recipes/terminus">NestJS — Healthchecks (Terminus)</a>, раздел Custom health indicator: <code>HealthIndicatorService</code>, <code>up()</code> / <code>down()</code>. Готового индикатора для сырого <code>pg</code> там нет — не ищи, это проверено.</li>
+      <li>Глубже, если понравилось: <a href="https://sre.google/sre-book/addressing-cascading-failures/">Google SRE Book — Addressing Cascading Failures</a>. Раздел про перезапуски и «thundering herd» — это ровно та история с десятью подами, только написанная людьми, которые видели её на своём проде.</li>
+    </ul>
+
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="./0004-log-signed-with-someone-elses-name.html">Урок 0004 — Лог, подписанный чужим именем</a></li>
+      <li><a href="./0005-venue-that-moved-halfway.html">Урок 0005 — Площадка, которая переехала наполовину</a></li>
+      <li><a href="../.scratch/m0-foundation/issues/05-health-checks.md">Issue M0-05</a> и <a href="../.scratch/m0-foundation/issues/06-graceful-shutdown.md">M0-06</a></li>
+      <li><a href="../GLOSSARY.md">Словарь</a> — <code>liveness</code>, <code>readiness</code> и <code>cascading failure</code> уедут туда, когда сдашь пункт 4</li>
+    </ul>
+
+    <div class="ask">
+      Жду пункты 1, 2 и 4. Пункт 2 сдавай до кода — я хочу видеть число и рассуждение, а не подогнанную задним числом константу. Пункт 5 важнее, чем кажется: именно на нём видно, понял ли ты разницу между «перестал ждать» и «отменил», а она вернётся в M4, когда таймаут будет стоять на транзакции с захваченными строками.
+    </div>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

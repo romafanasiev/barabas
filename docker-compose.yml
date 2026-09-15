@@ -13,7 +13,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d ${POSTGRES_NAME}']
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_NAME}']
       interval: 10s
       timeout: 5s
       retries: 3
@@ -31,7 +31,8 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", 'redis-cli -a "$$REDIS_PASS" --no-auth-warning ping | grep -q PONG']
+      test:
+        ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASS" --no-auth-warning ping | grep -q PONG']
       interval: 10s
       timeout: 5s
       retries: 3
@@ -47,12 +48,16 @@ services:
       - .env
     environment:
       POSTGRES_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASS}@postgres:5432/${POSTGRES_NAME}
+      REDIS_URL: redis://:${REDIS_PASS}@redis:6379
       PORT: ${PORT}
     ports:
       - "3000:3000"
     volumes:
       - .:/usr/src/app
+      # keep the image's own dependency trees: the host ones are pnpm symlinks
+      # into a store that does not exist inside the container
       - /usr/src/app/node_modules
+      - /usr/src/app/apps/server/node_modules
     networks:
       - nest_network
     depends_on:
