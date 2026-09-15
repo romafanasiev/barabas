@@ -82,6 +82,8 @@ Issues:
 
 📄 Уроки: `0004` ✅ [лог, подписанный чужим именем](./lessons/0004-log-signed-with-someone-elses-name.html)
 (`AsyncLocalStorage`, child-логгеры, correlation id) — к `M0-04` и `M0-07`
+`0006` ✅ [проверка, которая не отвечает](./lessons/0006-check-that-never-answers.html)
+(liveness против readiness, два сорта таймаута, каскад перезапусков) — к `M0-05` и `M0-06`
 
 ---
 
