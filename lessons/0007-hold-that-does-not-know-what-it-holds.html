@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Урок 0007 — Бронь, которая не знает, что держит</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Урок 0007 · этап M1 · моделирование</p>
+  <h1>Бронь, которая не знает, что держит</h1>
+  <p class="standfirst">В нумерованной секции покупатель держит <em>место</em>. В фан-зоне — <em>две штуки из пятисот</em>. Одна и та же кнопка «забронировать», две разные вещи в базе. Сегодня ты сломаешь в терминале самый экономный способ это записать и получишь критерий, по которому выбирается форма развилки — не «сколько таблиц красивее», а «какое правило после выбора ещё можно запретить схемой».</p>
+  <div class="meta">
+    <span>≈ 30 минут</span>
+    <span>Нужен postgres из твоего <code>docker compose</code></span>
+    <span>Ведёт к M1-02 (пункты 5 и 6), M1-04, M1-06, M1-10, M1-12</span>
+  </div>
+
+  <h2>Сначала вспомни</h2>
+
+  <p>Без подглядывания в прошлые уроки.</p>
+
+  <div class="quiz">
+    <span class="label">Recall · 1 из 2</span>
+    <p class="q">Чем материализованный счётчик отличается от блокировки общей строки как средство от write skew?</p>
+    <div class="options">
+      <button>Он дешевле по времени: одна строка обновляется быстрее, чем берётся lock</button>
+      <button>Он не требует повторов транзакции, тогда как блокировка приводит к ретраям</button>
+      <button data-correct>Он защищает и тот код, который написан без всякого знания о правиле</button>
+      <button>Он работает на любом уровне изоляции, а блокировка — только на Serializable</button>
+    </div>
+    <p class="explain" hidden>Первые два способа защищают ровно тот код, который их применил: забыл взять lock в одном эндпоинте — дыра вернулась. Счётчик превращает правило в <code>CHECK</code>, то есть в свойство схемы: его нельзя обойти запросом, написанным через год человеком, который про правило не слышал. Сегодня ты увидишь, что это ещё и решение о <strong>форме</strong> схемы, а не только средство от гонки.</p>
+  </div>
+
+  <div class="quiz">
+    <span class="label">Recall · 2 из 2</span>
+    <p class="q">По какому признаку видно, что колонка стоит не в своей таблице?</p>
+    <div class="options">
+      <button data-correct>Она зависит не от ключа строки, а от другой колонки этой же строки</button>
+      <button>Она заполняется позже остальных колонок и до этого момента лежит пустой</button>
+      <button>Она повторяется в стольких строках, во скольких повторяется её источник</button>
+      <button>Она меняется отдельной командой, а не вместе с остальными колонками</button>
+    </div>
+    <p class="explain" hidden>Присяга Кента: каждый неключевой атрибут зависит от ключа, от всего ключа и ни от чего, кроме ключа. Повтор значения — следствие, а не признак. Сегодня тот же вопрос задаётся связи, а не колонке: <strong>от чего зависит эта ссылка — и одна ли она по смыслу?</strong></p>
+  </div>
+
+  <h2>Задача на один абзац</h2>
+
+  <p>У тебя на диаграмме <code>HoldItem</code> ссылается на <code>EventSeat</code> — строку «место на этом концерте». Для партера это точно: держать можно ряд 4 место 12, и <code>M1-10</code> запретит держать его дважды partial unique index'ом. Теперь покупатель открывает фан-зону и берёт два входа. Строки <code>EventSeat</code> там нет — в ненумерованной секции мест нет вообще, есть вместимость и число занятых. Чем заполнить <code>event_seat_id</code>?</p>
+
+  <p>Это и есть развилка, которую <code>M1-02</code> называет главным вопросом issue. У неё ровно четыре честные формы, и у каждой своя цена. Сегодня мы не выбираем — сегодня мы смотрим, что база умеет запретить в каждой.</p>
+
+  <h2>Полигон</h2>
+
+  <p>Схема на выброс, в отдельном <code>schema</code>, чтобы не мешать будущим миграциям. Типы здесь <code>int</code>, а не <code>uuid</code> — это полигон, а не твоя схема.</p>
+
+  <p class="filename">поднять базу и зайти в psql</p>
+  <pre><code>$ docker compose up -d postgres
+$ docker compose exec postgres psql -U postgres -d barabas</code></pre>
+
+  <pre><code>CREATE SCHEMA lesson7;
+SET search_path = lesson7;
+
+CREATE TABLE event_seat (id int PRIMARY KEY);
+INSERT INTO event_seat SELECT generate_series(1, 3);
+
+-- фан-зона: вместимость два человека, и всё
+CREATE TABLE allocation (id int PRIMARY KEY, capacity int NOT NULL);
+INSERT INTO allocation VALUES (1, 2);</code></pre>
+
+  <h2>Опыт 1: самый экономный способ — одна таблица на обе ветки</h2>
+
+  <p>Та самая форма, которую триаж <code>M1-02</code> называет ловушкой: две nullable FK, заполнена всегда одна.</p>
+
+  <pre><code>CREATE TABLE hold_item (
+  id            serial PRIMARY KEY,
+  hold_id       int  NOT NULL,
+  event_seat_id int  REFERENCES event_seat(id),
+  allocation_id int  REFERENCES allocation(id),
+  quantity      int,
+  status        text NOT NULL
+);
+
+CREATE UNIQUE INDEX ON hold_item (event_seat_id) WHERE status = 'active';</code></pre>
+
+  <p>Сначала хорошая новость. Ветка «место» защищена ровно так, как ты решил в пункте 7:</p>
+
+  <pre><code>INSERT INTO hold_item (hold_id, event_seat_id, quantity, status)
+VALUES (1, 1, 1, 'active');
+-- INSERT 0 1
+
+INSERT INTO hold_item (hold_id, event_seat_id, quantity, status)
+VALUES (2, 1, 1, 'active');
+-- ERROR:  duplicate key value violates unique constraint "hold_item_event_seat_id_idx"
+-- DETAIL:  Key (event_seat_id)=(1) already exists.</code></pre>
+
+  <div class="callout win">
+    <span class="label">Работает</span>
+    <p>Обрати внимание, <strong>почему</strong> работает: «одно место — один активный Hold» — это правило про <em>одну строку против одной строки</em>. Уникальность — ровно такой инструмент. Ничего считать не надо, достаточно сравнить значения.</p>
+  </div>
+
+  <p>Теперь фан-зона. Вместимость — два. Два покупателя берут по два входа.</p>
+
+  <pre><code>INSERT INTO hold_item (hold_id, allocation_id, quantity, status)
+VALUES (3, 1, 2, 'active');
+-- INSERT 0 1
+
+INSERT INTO hold_item (hold_id, allocation_id, quantity, status)
+VALUES (4, 1, 2, 'active');
+-- INSERT 0 1
+
+SELECT sum(quantity) AS held, (SELECT capacity FROM allocation WHERE id = 1) AS capacity
+FROM hold_item WHERE allocation_id = 1 AND status = 'active';
+--  held | capacity
+-- ------+----------
+--     4 |        2</code></pre>
+
+  <div class="callout warn">
+    <span class="label">Вот оно</span>
+    <p>Четыре удержанных при вместимости два, две команды подряд, ни одной ошибки, <strong>и даже без всякой конкуренции</strong> — это не race condition, это просто отсутствующее правило. Овербукинг в один поток.</p>
+  </div>
+
+  <p>Инстинктивное лекарство — дописать <code>CHECK</code>. Попробуй:</p>
+
+  <pre><code>ALTER TABLE hold_item ADD CONSTRAINT within_capacity CHECK (
+  (SELECT sum(quantity) FROM hold_item hi WHERE hi.allocation_id = hold_item.allocation_id) &lt;= 2
+);
+-- ERROR:  cannot use subquery in check constraint</code></pre>
+
+  <h2>Почему база отказалась</h2>
+
+  <p>Документация PostgreSQL формулирует это в одном предложении: выражение <code>CHECK</code> не может содержать подзапросы и ссылаться на что-либо, кроме колонок <strong>текущей строки</strong>. Причина не в лени разработчиков. Constraint проверяется при записи строки; чтобы он был честным, его истинность обязана зависеть только от того, что в этой записи есть. Правило «сумма по группе строк не больше числа» зависит от строк, которых команда не трогала, — проверить его один раз при вставке недостаточно, его пришлось бы перепроверять при каждом изменении любой соседней строки, включая те, что делают параллельные транзакции.</p>
+
+  <p>Ты это уже видел в <a href="./0003-rule-the-database-cannot-see.html">уроке 0003</a> с другой стороны: правило шириной больше одной строки база не видит. Тогда речь шла про конкуренцию. Сегодня оказалось, что оно не видно даже без конкуренции — и это уже не про изоляцию, а про <strong>форму схемы</strong>.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 1 из 3</span>
+    <p class="q">Почему база пропустила четыре удержания при вместимости два?</p>
+    <div class="options">
+      <button>Потому что <code>quantity</code> не покрыт ни одним <code>CHECK</code> на положительность</button>
+      <button>Потому что уникальный индекс объявлен частичным и не покрывает квоту</button>
+      <button data-correct>Потому что правило считает строки, а constraint видит только свою</button>
+      <button>Потому что обе вставки прошли в одной транзакции и правило не успело</button>
+    </div>
+    <p class="explain" hidden>Ни отдельная строка, ни отдельная команда правило не нарушают: «держу два при вместимости два» законно для каждой из них. Нарушает их сумма — факт, которого нет ни в одной строке таблицы. Пока факт не записан, запрещать нечего.</p>
+  </div>
+
+  <h2>Опыт 2: сделать факт строкой</h2>
+
+  <p>Если инвариант — про сумму, запиши сумму. Тогда правило перестаёт быть правилом над множеством и становится правилом внутри строки, а это база умеет.</p>
+
+  <pre><code>CREATE TABLE ticket_allocation (
+  id       int PRIMARY KEY,
+  capacity int NOT NULL,
+  held     int NOT NULL DEFAULT 0,
+  sold     int NOT NULL DEFAULT 0,
+  CONSTRAINT within_capacity CHECK (held + sold &lt;= capacity),
+  CONSTRAINT non_negative    CHECK (held &gt;= 0 AND sold &gt;= 0)
+);
+
+INSERT INTO ticket_allocation (id, capacity) VALUES (1, 2);
+
+UPDATE ticket_allocation SET held = held + 2 WHERE id = 1;
+-- UPDATE 1
+
+UPDATE ticket_allocation SET held = held + 1 WHERE id = 1;
+-- ERROR:  new row for relation "ticket_allocation" violates check constraint "within_capacity"
+-- DETAIL:  Failing row contains (1, 2, 3, 0).</code></pre>
+
+  <p>Та же проверка, которая минуту назад была невыразима, теперь стоит в схеме и стоит ноль строк кода. Второй <code>CHECK</code> закрывает <code>available &gt;= 0</code> — второй инвариант <code>TicketAllocation</code> из таблицы агрегатов.</p>
+
+  <div class="callout">
+    <span class="label">Главное</span>
+    <p>Инвариант выразим ровно тогда, когда все его участники помещаются в одну строку. Вопрос «какую форму дать развилке» — это на самом деле вопрос «<strong>где записан факт, который я хочу запретить нарушать</strong>». Не «сколько таблиц», не «красиво ли выглядит».</p>
+  </div>
+
+  <p>И сразу цена, потому что бесплатно не бывает:</p>
+
+  <ul>
+    <li><strong>Счётчик — денормализация.</strong> <code>held</code> обязан меняться в той же транзакции, что и <code>hold_item</code>, иначе строки и число разъедутся, а <code>Reconciliation</code> из словаря — это ровно тот запрос, который такое расхождение ловит. Осознать эту цену и записать её — отдельный issue, <code>M1-12</code>.</li>
+    <li><strong>В строке больше не видно, кто держит.</strong> <code>ticket_allocation</code> знает «занято три», но не знает, чьи это три. Знание живёт в <code>hold_item.quantity</code>, то есть проверка «отпустил ровно столько, сколько держал» — уже не constraint, а код агрегата.</li>
+    <li><strong>Конкуренция никуда не делась, она переехала.</strong> <code>UPDATE ... SET held = held + 1</code> атомарен и сериализуется на блокировке строки. А вот <code>SELECT held</code> → посчитать в приложении → <code>UPDATE ... SET held = 3</code> — это классический lost update из <a href="./0001-race-for-the-last-ticket.html">урока 0001</a>, и <code>CHECK</code> от него не спасёт: он проверит то число, которое ты сам привёз. Constraint защищает от неверного значения, а не от неверного способа его посчитать.</li>
+    <li><strong>Вся фан-зона — одна строка.</strong> Значит все покупатели этой зоны выстраиваются в очередь на одну блокировку. Это цена, которую ты назовёшь вслух в <code>M4</code>, и она же — аргумент, который иногда перевешивает всё остальное.</li>
+  </ul>
+
+  <div class="quiz">
+    <span class="label">Проверка · 2 из 3</span>
+    <p class="q">Что именно изменилось, когда счётчик стал колонкой?</p>
+    <div class="options">
+      <button>Проверка стала выполняться при записи, а не при чтении данных</button>
+      <button>Правило перестало зависеть от уровня изоляции текущей транзакции</button>
+      <button>Сумма стала считаться заранее, и запросу не нужен агрегат по строкам</button>
+      <button data-correct>Все участники правила съехались в строку, которую база проверяет</button>
+    </div>
+    <p class="explain" hidden>Считать заранее — это про скорость чтения, приятный побочный эффект. Смысл в другом: <code>held</code>, <code>sold</code> и <code>capacity</code> оказались в одной строке, а значит выражение над ними — законный <code>CHECK</code>. Изоляция при этом остаётся вопросом: constraint проверяет значение, а не то, как ты его получил.</p>
+  </div>
+
+  <h2>Четыре формы развилки и их цена</h2>
+
+  <p>Теперь то, ради чего урок. Ты знаешь, что каждая ветка умеет защищать поодиночке. Осталось решить, как они лежат вместе.</p>
+
+  <table>
+    <thead>
+      <tr><th>Форма</th><th>Что держит база</th><th>Чем платишь</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>A.</strong> Одна таблица, две nullable FK</td>
+        <td>Обе FK честные — NULL внешний ключ не проверяется, и это не дыра, а правило SQL. Partial unique по месту работает. «Ровно одно из двух» выражается <code>CHECK (num_nonnulls(event_seat_id, allocation_id) = 1)</code></td>
+        <td><code>CHECK</code> растёт с каждым атрибутом ветки: <code>quantity</code> для места всегда 1, для квоты — любое, и это уже вторая половина выражения. Каждый запрос обязан помнить про NULL. Строка не отвечает на вопрос «что ты такое», пока не посмотришь на две колонки сразу</td>
+      </tr>
+      <tr>
+        <td><strong>B.</strong> Супертип <code>hold_item</code> + две дочерние таблицы</td>
+        <td>У каждой ветки свой FK без NULL и свои constraint, ни одного «иногда пусто». Общий <code>hold_id</code> и статус лежат в одном месте</td>
+        <td>База не умеет потребовать «у каждой строки супертипа ровно одна дочерняя»: ни одной, или сразу две — законно. Join на каждое чтение. Это классический class-table inheritance со всеми его известными неудобствами</td>
+      </tr>
+      <tr>
+        <td><strong>C.</strong> Две независимые таблицы, общего супертипа нет</td>
+        <td>Каждая ветка — чистая схема: никаких NULL, никаких развилочных <code>CHECK</code>, свой partial unique там, где он нужен</td>
+        <td>Инвариант «Hold непустой» теперь считается по двум таблицам сразу. Два репозитория, два пути в коде, две миграции. В <code>M4-08</code> детерминированный порядок захвата придётся задавать ещё и <em>между таблицами</em>, а не только между строками</td>
+      </tr>
+      <tr>
+        <td><strong>D.</strong> Развилки нет: ненумерованная секция тоже получает строки <code>EventSeat</code></td>
+        <td>Одна ветка на всё. Вместимость = число строк, «продано дважды» ловится тем же самым индексом, инвариант <code>held + sold &lt;= capacity</code> исчезает как отдельное правило — его больше нечем нарушить</td>
+        <td>Строки на каждое место фан-зоны, умноженные на каждый концерт. Ряд и номер становятся синтетическими — то есть у сущности появляются поля, которые ничего не значат для половины данных. «Сколько свободно» превращается в <code>COUNT(*)</code> на горячем пути, и денормализованный счётчик из <code>M1-12</code> становится не выбором, а необходимостью</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="label">Критерий</span>
+    <p>Форма выбирается не по числу таблиц и не по красоте диаграммы. Задай каждому варианту два вопроса: <strong>какие инварианты после него остаются выразимыми в схеме</strong> — и <strong>какие переезжают в код, где их защищает дисциплина, а не база</strong>. Второй список не обязан быть пустым. Он обязан быть <em>названным</em>.</p>
+  </div>
+
+  <p>Заметь: вариант A — тот, который issue называет ловушкой, — вовсе не запрещён. Его цена известна и измерима, и есть системы, где она приемлема. Возвращают на доработку не за выбор A, а за выбор A <strong>молча</strong>, когда цена не названа и обнаруживается в <code>M1-06</code>, где <code>CHECK</code> внезапно оказывается на пять строк длиннее, чем ожидалось.</p>
+
+  <h2>Как это выглядит на диаграмме — и почему это пункт 5, а не косметика</h2>
+
+  <p>Развилка проступает в cardinality раньше, чем в DDL. В варианте A связь <code>HoldItem</code> → <code>EventSeat</code> читается как «ноль или один»:</p>
+
+  <pre><code>EventSeat |o--o{ HoldItem : "held by"</code></pre>
+
+  <p>Со стороны <code>EventSeat</code> стоит <code>|o</code> — ноль или один. То есть ты диаграммой заявляешь: <strong>у HoldItem может не быть места</strong>. Это выглядит безобидно, а означает ровно то, что ты видел в опыте 1: строку, которая не держит ничего, база примет с радостью, если не дописать <code>CHECK</code>. В варианте C та же связь становится <code>||</code> — ровно один, — и запрещать нечего, потому что непредставимо.</p>
+
+  <p>Отсюда правило для пункта 5: <strong>каждый <code>|o</code> и каждый <code>o{</code> — это вопрос «а что, если ноль», на который должен быть ответ</strong>. Либо «так и задумано, вот constraint, который стережёт границу», либо это случайная дыра, которую ты сам на себя нарисовал. Сплошная и пунктирная линии (<code>--</code> против <code>..</code>) в пункте 9 отвечают на другой вопрос — может ли дочерняя строка пережить родителя, — и именно поэтому их ответы обязаны совпасть с границами агрегатов.</p>
+
+  <div class="quiz">
+    <span class="label">Проверка · 3 из 3</span>
+    <p class="q">Что <code>|o</code> со стороны родителя означает на языке constraint'ов?</p>
+    <div class="options">
+      <button>Что связь необязательна и её проверка откладывается до конца транзакции</button>
+      <button data-correct>Что колонка ссылки nullable и ссылка в этой строке может отсутствовать</button>
+      <button>Что у родителя может не быть детей, и это нормальное состояние строки</button>
+      <button>Что дочерняя строка обязана исчезнуть вместе с родительской по каскаду</button>
+    </div>
+    <p class="explain" hidden>Минимум на конце связи — это про NOT NULL на колонке ссылки, и больше ни про что. «У родителя может не быть детей» — это другой конец линии. Отложенная проверка — это <code>DEFERRABLE</code>, свойство самого constraint, которое на диаграмме не рисуется вообще.</p>
+  </div>
+
+  <h2>Что этот выбор потянет за собой</h2>
+
+  <ul>
+    <li><code>M1-04</code> — миграции. Форма решает, сколько таблиц ты создашь и какие колонки будут <code>NOT NULL</code>.</li>
+    <li><code>M1-06</code> — check constraints. В варианте A часть из них будет про развилку, в C — ни одного такого.</li>
+    <li><code>M1-10</code> — partial unique index. Уникальность «одно место — один активный Hold» переживает все четыре формы, но в A индекс строится по nullable-колонке, и стоит один раз проговорить, что NULL'ы в уникальный индекс не конфликтуют между собой.</li>
+    <li><code>M1-12</code> — ADR про денормализованный <code>available</code>. В варианте D этот ADR становится обязательным, в A и C — остаётся выбором.</li>
+    <li><code>M1-13</code> — границы агрегатов. <code>TicketAllocation</code> назван агрегатом в <code>CONTEXT.md</code>: значит <code>Hold</code> ссылается на него <strong>по id</strong>, а не втягивает внутрь себя. Форма развилки обязана этому не противоречить.</li>
+    <li><code>M4-08</code> — порядок захвата блокировок. Одна таблица или две — это разный алгоритм сортировки при захвате.</li>
+  </ul>
+
+  <p>И отдельно — то, чего сейчас нет вообще. На твоей диаграмме от <code>Inventory</code> до концерта нет пути: <code>Inventory</code> знает <code>TicketType</code>, а <code>TicketType</code> не знает ни <code>Event</code>, ни <code>Section</code>. Любая форма из четырёх требует ответа на вопрос «квота <em>чего</em>»: квота типа билета на концерте, квота секции на концерте, или и то и другое. Это первая из трёх развилок триажа, и без неё вторая не решается.</p>
+
+  <h2>Прибраться</h2>
+
+  <pre><code>DROP SCHEMA lesson7 CASCADE;</code></pre>
+
+  <h2>Задание</h2>
+
+  <ol class="steps">
+    <li>Прогони оба опыта руками. Ответь одной фразой: почему база пропустила четыре удержания при вместимости два — так, чтобы в ответе не было слов «нет CHECK», а было про то, где живёт факт.</li>
+    <li><strong>Пункт 2 плана.</strong> Инвентаризация словаря: файл-черновик, где у каждого понятия из <code>CONTEXT.md</code> стоит пометка «таблица / поле / вычисляется запросом / часть агрегата, но не таблица». Отдельно: <code>Reconciliation</code>, <code>CheckIn</code>, <code>TicketAllocation</code> и все value objects. Именно по этому списку DoD проверяется, а не по памяти.</li>
+    <li><strong>Пункт 6, решение.</strong> Выбери форму — A, B, C, D или свою — и запиши в <code>## Comments</code> у <code>M1-02</code> <strong>до</strong> того, как тронешь диаграмму. В записи обязаны быть два списка: что после выбора держит схема и что переезжает в код агрегата.</li>
+    <li>Там же ответь на прямой вопрос: чем после твоего выбора держатся <code>held + sold &lt;= capacity</code> и <code>available &gt;= 0</code>. Это две из четырёх строк таблицы инвариантов, которые в пункте 10 стоят без ответа.</li>
+    <li>Реши первую развилку триажа: чем <code>TicketType</code> добирается до того, что он продаёт. Сейчас от <code>Inventory</code> до <code>Event</code> пути нет, и это видно без ревью.</li>
+    <li><strong>Пункт 5.</strong> После решения — связи с cardinality. Правило приёмки моё: у каждого <code>|o</code> и <code>o{</code> на диаграмме есть ответ на вопрос «что, если ноль». Готовь его к ревью, спрошу выборочно.</li>
+    <li>Назови одну связь, которая при варианте D исчезает с диаграммы совсем. Если таких нет — скажи, что нет, и это тоже ответ.</li>
+  </ol>
+
+  <div class="footer">
+    <h2 id="src">Первоисточники</h2>
+    <ul>
+      <li><strong>Читать в первую очередь:</strong> <a href="https://www.postgresql.org/docs/current/ddl-constraints.html">PostgreSQL — Constraints</a>. Нужны разделы Check Constraints (там дословно про запрет подзапросов и про то, что видно только текущую строку) и Foreign Keys. Заодно посмотри Exclusion Constraints — инструмент, который умеет то, что <code>UNIQUE</code> не умеет, и однажды тебе понадобится.</li>
+      <li><a href="https://www.postgresql.org/docs/current/indexes-partial.html">PostgreSQL — Partial Indexes</a>. Раздел 11.8.1 — ровно твой случай с <code>WHERE status = 'active'</code>, и там же объяснение, почему частичный индекс дешевле полного.</li>
+      <li><a href="https://www.postgresql.org/docs/current/functions-comparison.html">PostgreSQL — Comparison Functions and Operators</a>, функции <code>num_nonnulls</code> и <code>num_nulls</code>. Короткий способ записать «ровно одно из двух» без лестницы из <code>AND</code> и <code>OR</code>.</li>
+      <li>Bill Karwin, <em>SQL Antipatterns</em>, глава <strong>Polymorphic Associations</strong>. Это твоя развилка, разобранная целиком: почему одна колонка на две сущности ломает FK и какие три выхода из этого есть. Варианты B и C в уроке — оттуда.</li>
+      <li><a href="https://martinfowler.com/eaaCatalog/classTableInheritance.html">Martin Fowler — Class Table Inheritance</a> и рядом <a href="https://martinfowler.com/eaaCatalog/singleTableInheritance.html">Single Table Inheritance</a>. Те же A и B, но с точки зрения мэппинга объектов, а не схемы. Полезно прочитать оба взгляда до решения.</li>
+      <li><a href="https://mermaid.js.org/syntax/entityRelationshipDiagram.html">Mermaid — Entity Relationship Diagrams</a>, таблица cardinality и разница <code>--</code> / <code>..</code>. Пригодится в пунктах 5 и 9.</li>
+    </ul>
+
+    <h2>Рядом</h2>
+    <ul>
+      <li><a href="./0003-rule-the-database-cannot-see.html">Урок 0003 — Правило, которого база не видит</a></li>
+      <li><a href="./0005-venue-that-moved-halfway.html">Урок 0005 — Площадка, которая переехала наполовину</a></li>
+      <li><a href="../.scratch/m1-domain-model/issues/02-er-diagram.md">Issue M1-02</a>, пункты 5 и 6</li>
+      <li><a href="../docs/db/states-and-invariants.md">docs/db/states-and-invariants.md</a> — туда же поедет решение по квоте</li>
+      <li><a href="../CONTEXT.md">CONTEXT.md</a> — таблица «Агрегаты и их инварианты», строка <code>TicketAllocation</code></li>
+    </ul>
+
+    <div class="ask">
+      Жду пункты 1, 3 и 4 — до правок диаграммы. Мне нужно решение с названной ценой, а не диаграмма, из которой я буду цену вычитать сам: задним числом она всегда выглядит обоснованной. Пункт 7 не для галочки — вариант D стоит проверить всерьёз, потому что развилка, которой нет, не требует ни одного из четырёх компромиссов, и отвергать его надо числом строк, а не вкусом.
+    </div>
+  </div>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
