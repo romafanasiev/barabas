@@ -18,5 +18,8 @@
     "format:check": "pnpm -r format:check",
     "test": "pnpm -r test",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run format:check"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1"
   }
 }

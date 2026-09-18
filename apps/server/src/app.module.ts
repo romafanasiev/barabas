@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module } from '@nestjs/common';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AppConfigModule } from './config/config.module.js';
+import { DrizzleModule } from './core/infrastructure/postgres/drizzle.module.js';
 import { PostgresModule } from './core/infrastructure/postgres/postgres.module.js';
 import { RedisModule } from './core/infrastructure/redis/redis.module.js';
 import { LifecycleModule } from './core/lifecycle/lifecycle.module.js';
@@ -20,6 +21,7 @@ import { HealthModule } from './health/health.module.js';
     AlsModule,
     LifecycleModule,
     HealthModule,
+    DrizzleModule,
   ],
   controllers: [AppController],
   providers: [AppService, PinoHttpMiddleware, LoggerMiddleware],

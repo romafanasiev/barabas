@@ -6,3 +6,7 @@ pnpm-lock.yaml
 .tanstack
 .output
 .nitro
+
+# Snapshots written by drizzle-kit: machine-owned, rewritten on every db:generate.
+# The .sql migrations are NOT ignored — those we read and review.
+drizzle/meta

@@ -31,6 +31,27 @@
 $ pnpm install
 ```
 
+## Database migrations
+
+```bash
+$ pnpm db:generate   # TS schema -> drizzle/NNNN_*.sql
+$ pnpm db:migrate    # apply pending migrations
+```
+
+Both scripts read the repository-root `.env` through `DOTENV_CONFIG_PATH`, because the
+env file lives next to `docker-compose.yml`, one level above this package.
+
+**There is no down migration, and there is no rollback command.** `drizzle-kit` does not
+have one: its `drop` deletes a file from the journal, it does not undo anything in the
+database (ADR-0004, measurement 7). Consequences, until `M7` revisits this:
+
+- to reset a development database, recreate it — `docker compose down -v && docker compose
+up -d postgres && pnpm db:migrate`;
+- a mistake in an applied migration is fixed by writing the next migration, never by editing
+  the applied one: the journal stores a hash of the file, and an edited file no longer matches;
+- a row in `drizzle.__drizzle_migrations` outlives the file it came from. Deleting a
+  migration from the repository does not delete its record in the database.
+
 ## Compile and run the project
 
 ```bash
