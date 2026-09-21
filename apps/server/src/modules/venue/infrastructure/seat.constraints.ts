@@ -3,3 +3,5 @@ export const SEAT_SECTION_ID_ROW_NO_SEAT_NUMBER_CONSTRAINT =
 export const SEAT_SECTION_TYPE_CHECK = 'seat_section_type_ck';
 export const SEAT_SECTION_ID_SECTION_TYPE_FK =
   'seat_section_id_section_type_fk';
+export const SEAT_ID_VENUE_ID_CONSTRAINT = 'seat_id_venue_id_uq';
+export const SEAT_SECTION_ID_VENUE_ID_FK = 'seat_section_id_venue_id_fk';

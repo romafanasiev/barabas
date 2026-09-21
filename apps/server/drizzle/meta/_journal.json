@@ -8,6 +8,20 @@
       "when": 1789732500903,
       "tag": "0000_ordinary_kulan_gath",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789975418923,
+      "tag": "0001_currency",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789979172765,
+      "tag": "0002_cooing_post",
+      "breakpoints": true
     }
   ]
 }
