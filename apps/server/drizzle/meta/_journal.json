@@ -43,6 +43,13 @@
       "when": 1790244531778,
       "tag": "0005_check_constraints",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790245965400,
+      "tag": "0006_order_item_pair_unique",
+      "breakpoints": true
     }
   ]
 }

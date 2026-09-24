@@ -7,6 +7,7 @@ import {
   numeric,
   pgTable,
   timestamp,
+  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { eventSeat } from '../../event/infrastructure/event-seat.schema.js';
@@ -16,7 +17,9 @@ import {
   ORDER_ITEM_ALLOCATION_ID_FK,
   ORDER_ITEM_EVENT_SEAT_ID_ALLOCATION_ID_CHECK,
   ORDER_ITEM_EVENT_SEAT_ID_FK,
+  ORDER_ITEM_ORDER_ID_ALLOCATION_ID_CONSTRAINT,
   ORDER_ITEM_ORDER_ID_CURRENCY_FK,
+  ORDER_ITEM_ORDER_ID_EVENT_SEAT_ID_CONSTRAINT,
   ORDER_ITEM_PRICE_CHECK,
   ORDER_ITEM_QUANTITY_CHECK,
 } from './order-item.constraints.js';
@@ -42,6 +45,16 @@ export const orderItem = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => [
+    /* NULLS DISTINCT (the default) is load-bearing here: see M1-09, point 5. */
+    unique(ORDER_ITEM_ORDER_ID_EVENT_SEAT_ID_CONSTRAINT).on(
+      table.orderId,
+      table.eventSeatId,
+    ),
+    unique(ORDER_ITEM_ORDER_ID_ALLOCATION_ID_CONSTRAINT).on(
+      table.orderId,
+      table.allocationId,
+    ),
+
     check(
       ORDER_ITEM_EVENT_SEAT_ID_ALLOCATION_ID_CHECK,
       sql`num_nonnulls(${table.eventSeatId}, ${table.allocationId}) = 1`,

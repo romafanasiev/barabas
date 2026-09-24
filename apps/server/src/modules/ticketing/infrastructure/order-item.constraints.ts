@@ -6,3 +6,7 @@ export const ORDER_ITEM_ORDER_ID_CURRENCY_FK =
 export const ORDER_ITEM_EVENT_SEAT_ID_FK = 'order_item_event_seat_id_fk';
 export const ORDER_ITEM_ALLOCATION_ID_FK = 'order_item_allocation_id_fk';
 export const ORDER_ITEM_PRICE_CHECK = 'order_item_price_ck';
+export const ORDER_ITEM_ORDER_ID_EVENT_SEAT_ID_CONSTRAINT =
+  'order_item_order_id_event_seat_id_uq';
+export const ORDER_ITEM_ORDER_ID_ALLOCATION_ID_CONSTRAINT =
+  'order_item_order_id_allocation_id_uq';
