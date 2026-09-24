@@ -11,6 +11,7 @@ erDiagram
     TicketType ||..o{ EventSeat : "priced as"
     TicketType ||..o{ TicketAllocation : "priced as"
     TicketType ||..o{ Ticket : "priced as"
+    Event ||..o{ Hold : "held on"
     User ||..o{ Hold : "holds"
     Hold ||--o{ HoldSeatItem : "holds seat by"
     Hold ||--o{ HoldAllocatedItem : "holds quota by"
@@ -95,8 +96,9 @@ erDiagram
       timestamptz updated_at
     }
     Hold {
-      uuid id PK "aggregate root: Hold"
-      uuid user_id FK
+      uuid id PK "aggregate root: Hold; UK (id, event_id)"
+      text user_id FK
+      uuid event_id FK
       hold_status status
       timestamptz expires_at
       timestamptz created_at
@@ -172,14 +174,17 @@ erDiagram
       varchar(255) name
     }
     User {
-      uuid id PK
-      varchar(255) first_name
-      varchar(255) last_name
-      varchar(255) email UK
-      role role
+      text id PK "better-auth: таблица генерируется, не проектируется"
+      text name
+      text email UK
       boolean email_verified
-      timestamptz created_at
-      timestamptz updated_at
+      text image
+      text role
+      boolean banned
+      text ban_reason
+      timestamp ban_expires
+      timestamp created_at
+      timestamp updated_at
     }
 ```
 
@@ -199,6 +204,23 @@ erDiagram
 **Сущности без пометки живут вне агрегатов** — `venue`, `section`, `seat`, `ticket_type`,
 `currency`, `user`. Это не упущение: они не защищают инвариантов при записи, и по разделу
 «Где DDD не применяется» им положен обычный CRUD.
+
+**`user` отличается от остальных ещё и тем, что мы его не проектировали.** Таблицу владеет
+better-auth (решено 2026-09-22, миграция `0003_auth`): схема генерируется командой
+`pnpm auth:schema` и руками не правится. Отсюда три отличия от остального документа, которые
+надо видеть, а не считать опечаткой:
+
+- **`id` — `text`**, а не `uuid`; поэтому `hold.user_id` тоже `text`;
+- **времена — `timestamp` без таймзоны.** Опции, задающей тип, у drizzle-адаптера нет. В
+  **наших** таблицах по-прежнему только `timestamptz`, и это исключение названо здесь, чтобы на
+  ревью `M1-06` оно не выглядело недосмотром;
+- **имя одно (`name`), а не `first_name` + `last_name`**, и `role` — свободный `text` от плагина
+  `admin`, а не enum. Значения ролей (`buyer`, `organizer`, `scanner`, `admin`) задаются кодом в
+  `M3-03`, а не типом в базе.
+
+Остальные таблицы better-auth — `session`, `account`, `verification`, `rate_limit` — на этой
+диаграмме отсутствуют сознательно: это инфраструктура аутентификации, домена они не касаются и
+ни одной доменной связи не несут.
 
 Два места, где граница проведена сознательно и будет обосновываться в `M1-13`:
 

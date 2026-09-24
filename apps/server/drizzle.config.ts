@@ -10,7 +10,10 @@ const url = z
   .parse(process.env.POSTGRES_URL);
 
 export default defineConfig({
-  schema: ['./src/modules/**/infrastructure/*.schema.ts'],
+  schema: [
+    './src/modules/**/infrastructure/*.schema.ts',
+    './src/core/auth/auth.schema.ts',
+  ],
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: { url },

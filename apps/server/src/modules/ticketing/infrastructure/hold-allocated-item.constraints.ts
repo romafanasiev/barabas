@@ -1,0 +1,6 @@
+export const HOLD_ALLOCATED_ITEM_HOLD_ID_ALLOCATION_ID_ACTIVE_INDEX =
+  'hold_allocated_item_hold_id_allocation_id_active_uq';
+export const HOLD_ALLOCATED_ITEM_HOLD_ID_EVENT_ID_FK =
+  'hold_allocated_item_hold_id_event_id_fk';
+export const HOLD_ALLOCATED_ITEM_ALLOCATION_ID_EVENT_ID_FK =
+  'hold_allocated_item_allocation_id_event_id_fk';
