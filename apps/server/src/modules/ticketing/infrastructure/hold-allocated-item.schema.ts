@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  check,
   foreignKey,
   integer,
   pgTable,
@@ -12,6 +13,7 @@ import {
   HOLD_ALLOCATED_ITEM_ALLOCATION_ID_EVENT_ID_FK,
   HOLD_ALLOCATED_ITEM_HOLD_ID_ALLOCATION_ID_ACTIVE_INDEX,
   HOLD_ALLOCATED_ITEM_HOLD_ID_EVENT_ID_FK,
+  HOLD_ALLOCATED_ITEM_QUANTITY_CHECK,
 } from './hold-allocated-item.constraints.js';
 import { hold, holdItemStatus } from './hold.schema.js';
 
@@ -40,6 +42,8 @@ export const holdAllocatedItem = pgTable(
     uniqueIndex(HOLD_ALLOCATED_ITEM_HOLD_ID_ALLOCATION_ID_ACTIVE_INDEX)
       .on(table.holdId, table.allocationId)
       .where(sql`${table.status} = 'active'`),
+
+    check(HOLD_ALLOCATED_ITEM_QUANTITY_CHECK, sql`${table.quantity} > 0`),
 
     foreignKey({
       name: HOLD_ALLOCATED_ITEM_HOLD_ID_EVENT_ID_FK,

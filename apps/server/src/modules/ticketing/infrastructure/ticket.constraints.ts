@@ -9,3 +9,5 @@ export const TICKET_TICKET_TYPE_ID_FK = 'ticket_ticket_type_id_fk';
 export const TICKET_CURRENCY_FK = 'ticket_currency_fk';
 export const TICKET_EVENT_SEAT_ID_FK = 'ticket_event_seat_id_fk';
 export const TICKET_ALLOCATION_ID_FK = 'ticket_allocation_id_fk';
+export const TICKET_CODE_CHECK = 'ticket_code_ck';
+export const TICKET_TICKET_PRICE_CHECK = 'ticket_ticket_price_ck';

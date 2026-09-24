@@ -1,5 +1,7 @@
+import { sql } from 'drizzle-orm';
 import {
   char,
+  check,
   foreignKey,
   numeric,
   pgTable,
@@ -15,6 +17,8 @@ import {
   TICKET_TYPE_EVENT_ID_FK,
   TICKET_TYPE_EVENT_ID_TYPE_CONSTRAINT,
   TICKET_TYPE_ID_EVENT_ID_CONSTRAINT,
+  TICKET_TYPE_PRICE_CHECK,
+  TICKET_TYPE_TYPE_CHECK,
 } from './ticket-type.constraints.js';
 
 export const ticketType = pgTable(
@@ -36,6 +40,9 @@ export const ticketType = pgTable(
   (table) => [
     unique(TICKET_TYPE_EVENT_ID_TYPE_CONSTRAINT).on(table.eventId, table.type),
     unique(TICKET_TYPE_ID_EVENT_ID_CONSTRAINT).on(table.id, table.eventId),
+
+    check(TICKET_TYPE_TYPE_CHECK, sql`length(btrim(${table.type})) > 0`),
+    check(TICKET_TYPE_PRICE_CHECK, sql`${table.price} > 0`),
 
     foreignKey({
       name: TICKET_TYPE_EVENT_ID_FK,

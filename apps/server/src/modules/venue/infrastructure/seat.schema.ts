@@ -10,6 +10,8 @@ import {
 } from 'drizzle-orm/pg-core';
 import {
   SEAT_ID_VENUE_ID_CONSTRAINT,
+  SEAT_ROW_NO_CHECK,
+  SEAT_SEAT_NUMBER_CHECK,
   SEAT_SECTION_ID_ROW_NO_SEAT_NUMBER_CONSTRAINT,
   SEAT_SECTION_ID_SECTION_TYPE_FK,
   SEAT_SECTION_ID_VENUE_ID_FK,
@@ -41,6 +43,8 @@ export const seat = pgTable(
       table.seatNumber,
     ),
     check(SEAT_SECTION_TYPE_CHECK, sql`${table.sectionType} = 'numbered'`),
+    check(SEAT_ROW_NO_CHECK, sql`${table.rowNo} > 0`),
+    check(SEAT_SEAT_NUMBER_CHECK, sql`${table.seatNumber} > 0`),
 
     foreignKey({
       name: SEAT_SECTION_ID_SECTION_TYPE_FK,

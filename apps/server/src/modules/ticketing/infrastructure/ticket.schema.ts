@@ -18,6 +18,7 @@ import { ticketType } from '../../event/infrastructure/ticket-type.schema.js';
 import { payment, paymentStatus } from './payment.schema.js';
 import {
   TICKET_ALLOCATION_ID_FK,
+  TICKET_CODE_CHECK,
   TICKET_CODE_CONSTRAINT,
   TICKET_CURRENCY_FK,
   TICKET_EVENT_SEAT_ID_ALLOCATION_ID_CHECK,
@@ -25,6 +26,7 @@ import {
   TICKET_EVENT_SEAT_ID_INDEX,
   TICKET_PAYMENT_ID_PAYMENT_STATUS_FK,
   TICKET_PAYMENT_STATUS_CHECK,
+  TICKET_TICKET_PRICE_CHECK,
   TICKET_TICKET_TYPE_ID_FK,
 } from './ticket.constraints.js';
 
@@ -62,6 +64,8 @@ export const ticket = pgTable(
       TICKET_EVENT_SEAT_ID_ALLOCATION_ID_CHECK,
       sql`num_nonnulls(${table.eventSeatId}, ${table.allocationId}) = 1`,
     ),
+    check(TICKET_CODE_CHECK, sql`length(btrim(${table.code})) > 0`),
+    check(TICKET_TICKET_PRICE_CHECK, sql`${table.ticketPrice} > 0`),
 
     /* Second line of defence: the first one is the partial index on hold_seat_item, which
        does not let two holds take a seat. This one catches what that never sees — a bug in

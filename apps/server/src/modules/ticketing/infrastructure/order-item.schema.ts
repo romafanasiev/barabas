@@ -17,6 +17,7 @@ import {
   ORDER_ITEM_EVENT_SEAT_ID_ALLOCATION_ID_CHECK,
   ORDER_ITEM_EVENT_SEAT_ID_FK,
   ORDER_ITEM_ORDER_ID_CURRENCY_FK,
+  ORDER_ITEM_PRICE_CHECK,
   ORDER_ITEM_QUANTITY_CHECK,
 } from './order-item.constraints.js';
 
@@ -50,6 +51,7 @@ export const orderItem = pgTable(
       sql`(${table.eventSeatId} IS NOT NULL AND ${table.quantity} = 1)
           OR (${table.allocationId} IS NOT NULL AND ${table.quantity} >= 1)`,
     ),
+    check(ORDER_ITEM_PRICE_CHECK, sql`${table.price} > 0`),
 
     foreignKey({
       name: ORDER_ITEM_ORDER_ID_CURRENCY_FK,

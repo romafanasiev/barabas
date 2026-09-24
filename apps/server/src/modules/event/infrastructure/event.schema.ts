@@ -1,4 +1,6 @@
+import { sql } from 'drizzle-orm';
 import {
+  check,
   foreignKey,
   pgTable,
   timestamp,
@@ -8,6 +10,8 @@ import {
 } from 'drizzle-orm/pg-core';
 import { venue } from '../../venue/infrastructure/venue.schema.js';
 import {
+  EVENT_ARTIST_CHECK,
+  EVENT_ENDS_AT_STARTS_AT_CHECK,
   EVENT_ID_VENUE_ID_CONSTRAINT,
   EVENT_VENUE_ID_FK,
 } from './event.constraints.js';
@@ -30,6 +34,12 @@ export const event = pgTable(
   },
   (table) => [
     unique(EVENT_ID_VENUE_ID_CONSTRAINT).on(table.id, table.venueId),
+
+    check(EVENT_ARTIST_CHECK, sql`length(btrim(${table.artist})) > 0`),
+    check(
+      EVENT_ENDS_AT_STARTS_AT_CHECK,
+      sql`${table.endsAt} > ${table.startsAt}`,
+    ),
 
     foreignKey({
       name: EVENT_VENUE_ID_FK,

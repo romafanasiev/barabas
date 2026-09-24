@@ -15,6 +15,7 @@ import {
 import { event } from './event.schema.js';
 import {
   TICKET_ALLOCATION_CAPACITY_CHECK,
+  TICKET_ALLOCATION_CAPACITY_POSITIVE_CHECK,
   TICKET_ALLOCATION_EVENT_ID_SECTION_ID_CONSTRAINT,
   TICKET_ALLOCATION_ID_EVENT_ID_CONSTRAINT,
   TICKET_ALLOCATION_EVENT_ID_VENUE_ID_FK,
@@ -69,6 +70,10 @@ export const ticketAllocation = pgTable(
     check(
       TICKET_ALLOCATION_CAPACITY_CHECK,
       sql`${table.capacity} <= ${table.sectionCapacity}`,
+    ),
+    check(
+      TICKET_ALLOCATION_CAPACITY_POSITIVE_CHECK,
+      sql`${table.capacity} > 0`,
     ),
     check(
       TICKET_ALLOCATION_SECTION_TYPE_CHECK,

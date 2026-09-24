@@ -1,0 +1,19 @@
+ALTER TABLE "currency" ADD CONSTRAINT "currency_code_ck" CHECK ("currency"."code" ~ '^[A-Z]{3}$');--> statement-breakpoint
+ALTER TABLE "currency" ADD CONSTRAINT "currency_name_ck" CHECK (length(btrim("currency"."name")) > 0);--> statement-breakpoint
+ALTER TABLE "event" ADD CONSTRAINT "event_artist_ck" CHECK (length(btrim("event"."artist")) > 0);--> statement-breakpoint
+ALTER TABLE "event" ADD CONSTRAINT "event_ends_at_starts_at_ck" CHECK ("event"."ends_at" > "event"."starts_at");--> statement-breakpoint
+ALTER TABLE "ticket_allocation" ADD CONSTRAINT "ticket_allocation_capacity_positive_ck" CHECK ("ticket_allocation"."capacity" > 0);--> statement-breakpoint
+ALTER TABLE "ticket_type" ADD CONSTRAINT "ticket_type_type_ck" CHECK (length(btrim("ticket_type"."type")) > 0);--> statement-breakpoint
+ALTER TABLE "ticket_type" ADD CONSTRAINT "ticket_type_price_ck" CHECK ("ticket_type"."price" > 0);--> statement-breakpoint
+ALTER TABLE "hold_allocated_item" ADD CONSTRAINT "hold_allocated_item_quantity_ck" CHECK ("hold_allocated_item"."quantity" > 0);--> statement-breakpoint
+ALTER TABLE "order_item" ADD CONSTRAINT "order_item_price_ck" CHECK ("order_item"."price" > 0);--> statement-breakpoint
+ALTER TABLE "payment" ADD CONSTRAINT "payment_idempotency_key_ck" CHECK (length(btrim("payment"."idempotency_key")) > 0);--> statement-breakpoint
+ALTER TABLE "payment" ADD CONSTRAINT "payment_price_ck" CHECK ("payment"."price" > 0);--> statement-breakpoint
+ALTER TABLE "ticket" ADD CONSTRAINT "ticket_code_ck" CHECK (length(btrim("ticket"."code")) > 0);--> statement-breakpoint
+ALTER TABLE "ticket" ADD CONSTRAINT "ticket_ticket_price_ck" CHECK ("ticket"."ticket_price" > 0);--> statement-breakpoint
+ALTER TABLE "seat" ADD CONSTRAINT "seat_row_no_ck" CHECK ("seat"."row_no" > 0);--> statement-breakpoint
+ALTER TABLE "seat" ADD CONSTRAINT "seat_seat_number_ck" CHECK ("seat"."seat_number" > 0);--> statement-breakpoint
+ALTER TABLE "section" ADD CONSTRAINT "section_label_ck" CHECK (length(btrim("section"."label")) > 0);--> statement-breakpoint
+ALTER TABLE "section" ADD CONSTRAINT "section_capacity_ck" CHECK ("section"."capacity" > 0);--> statement-breakpoint
+ALTER TABLE "venue" ADD CONSTRAINT "venue_name_ck" CHECK (length(btrim("venue"."name")) > 0);--> statement-breakpoint
+ALTER TABLE "venue" ADD CONSTRAINT "venue_city_ck" CHECK (length(btrim("venue"."city")) > 0);

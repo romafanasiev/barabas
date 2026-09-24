@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   char,
+  check,
   foreignKey,
   numeric,
   pgEnum,
@@ -14,9 +15,11 @@ import {
 import { order } from './order.schema.js';
 import {
   PAYMENT_ID_STATUS_CONSTRAINT,
+  PAYMENT_IDEMPOTENCY_KEY_CHECK,
   PAYMENT_IDEMPOTENCY_KEY_CONSTRAINT,
   PAYMENT_ORDER_ID_CURRENCY_FK,
   PAYMENT_ORDER_ID_SUCCEEDED_INDEX,
+  PAYMENT_PRICE_CHECK,
 } from './payment.constraints.js';
 
 export const paymentStatus = pgEnum('payment_status', [
@@ -54,6 +57,12 @@ export const payment = pgTable(
     uniqueIndex(PAYMENT_ORDER_ID_SUCCEEDED_INDEX)
       .on(table.orderId)
       .where(sql`${table.status} = 'succeeded'`),
+
+    check(
+      PAYMENT_IDEMPOTENCY_KEY_CHECK,
+      sql`length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    check(PAYMENT_PRICE_CHECK, sql`${table.price} > 0`),
 
     foreignKey({
       name: PAYMENT_ORDER_ID_CURRENCY_FK,

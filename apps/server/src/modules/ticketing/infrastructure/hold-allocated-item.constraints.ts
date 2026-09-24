@@ -4,3 +4,5 @@ export const HOLD_ALLOCATED_ITEM_HOLD_ID_EVENT_ID_FK =
   'hold_allocated_item_hold_id_event_id_fk';
 export const HOLD_ALLOCATED_ITEM_ALLOCATION_ID_EVENT_ID_FK =
   'hold_allocated_item_allocation_id_event_id_fk';
+export const HOLD_ALLOCATED_ITEM_QUANTITY_CHECK =
+  'hold_allocated_item_quantity_ck';

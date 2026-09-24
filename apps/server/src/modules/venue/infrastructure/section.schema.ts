@@ -1,4 +1,6 @@
+import { sql } from 'drizzle-orm';
 import {
+  check,
   foreignKey,
   integer,
   pgEnum,
@@ -9,9 +11,11 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import {
+  SECTION_CAPACITY_CHECK,
   SECTION_ID_CAPACITY_CONSTRAINT,
   SECTION_ID_VENUE_ID_CONSTRAINT,
   SECTION_ID_TYPE_CONSTRAINT,
+  SECTION_LABEL_CHECK,
   SECTION_VENUE_ID_FK,
   SECTION_VENUE_ID_LABEL_CONSTRAINT,
 } from './section.constraints.js';
@@ -47,5 +51,8 @@ export const section = pgTable(
     unique(SECTION_ID_TYPE_CONSTRAINT).on(table.id, table.type),
     unique(SECTION_ID_CAPACITY_CONSTRAINT).on(table.id, table.capacity),
     unique(SECTION_ID_VENUE_ID_CONSTRAINT).on(table.id, table.venueId),
+
+    check(SECTION_LABEL_CHECK, sql`length(btrim(${table.label})) > 0`),
+    check(SECTION_CAPACITY_CHECK, sql`${table.capacity} > 0`),
   ],
 );

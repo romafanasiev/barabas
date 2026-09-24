@@ -36,6 +36,13 @@
       "when": 1790080115574,
       "tag": "0004_loose_yellow_claw",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790244531778,
+      "tag": "0005_check_constraints",
+      "breakpoints": true
     }
   ]
 }

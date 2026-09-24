@@ -19,3 +19,5 @@ export const TICKET_ALLOCATION_EVENT_ID_VENUE_ID_FK =
   'ticket_allocation_event_id_venue_id_fk';
 export const TICKET_ALLOCATION_TICKET_TYPE_ID_EVENT_ID_FK =
   'ticket_allocation_ticket_type_id_event_id_fk';
+export const TICKET_ALLOCATION_CAPACITY_POSITIVE_CHECK =
+  'ticket_allocation_capacity_positive_ck';
