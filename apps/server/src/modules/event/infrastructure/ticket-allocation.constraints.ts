@@ -1,5 +1,5 @@
-export const TICKET_ALLOCATION_EVENT_ID_SECTION_ID_CONSTRAINT =
-  'ticket_allocation_event_id_section_id_uq';
+export const TICKET_ALLOCATION_EVENT_ID_SECTION_ID_LIVE_INDEX =
+  'ticket_allocation_event_id_section_id_live_uq';
 export const TICKET_ALLOCATION_ID_EVENT_ID_CONSTRAINT =
   'ticket_allocation_id_event_id_uq';
 export const TICKET_ALLOCATION_HELD_SOLD_CAPACITY_CHECK =

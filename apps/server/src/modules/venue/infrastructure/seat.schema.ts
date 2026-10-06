@@ -1,18 +1,20 @@
-import { sql } from 'drizzle-orm';
+import { isNull, sql } from 'drizzle-orm';
 import {
   check,
   foreignKey,
   integer,
   pgTable,
+  pgView,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import {
   SEAT_ID_VENUE_ID_CONSTRAINT,
   SEAT_ROW_NO_CHECK,
   SEAT_SEAT_NUMBER_CHECK,
-  SEAT_SECTION_ID_ROW_NO_SEAT_NUMBER_CONSTRAINT,
+  SEAT_SECTION_ID_ROW_NO_SEAT_NUMBER_LIVE_INDEX,
   SEAT_SECTION_ID_SECTION_TYPE_FK,
   SEAT_SECTION_ID_VENUE_ID_FK,
   SEAT_SECTION_TYPE_CHECK,
@@ -35,13 +37,12 @@ export const seat = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
-    unique(SEAT_SECTION_ID_ROW_NO_SEAT_NUMBER_CONSTRAINT).on(
-      table.sectionId,
-      table.rowNo,
-      table.seatNumber,
-    ),
+    uniqueIndex(SEAT_SECTION_ID_ROW_NO_SEAT_NUMBER_LIVE_INDEX)
+      .on(table.sectionId, table.rowNo, table.seatNumber)
+      .where(sql`${table.deletedAt} IS NULL`),
     check(SEAT_SECTION_TYPE_CHECK, sql`${table.sectionType} = 'numbered'`),
     check(SEAT_ROW_NO_CHECK, sql`${table.rowNo} > 0`),
     check(SEAT_SEAT_NUMBER_CHECK, sql`${table.seatNumber} > 0`),
@@ -60,4 +61,8 @@ export const seat = pgTable(
 
     unique(SEAT_ID_VENUE_ID_CONSTRAINT).on(table.id, table.venueId),
   ],
+);
+
+export const seatLive = pgView('seat_live').as((qb) =>
+  qb.select().from(seat).where(isNull(seat.deletedAt)),
 );

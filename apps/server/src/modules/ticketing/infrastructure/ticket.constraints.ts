@@ -1,5 +1,5 @@
 export const TICKET_CODE_CONSTRAINT = 'ticket_code_uq';
-export const TICKET_EVENT_SEAT_ID_INDEX = 'ticket_event_seat_id_uq';
+export const TICKET_EVENT_SEAT_ID_LIVE_INDEX = 'ticket_event_seat_id_live_uq';
 export const TICKET_PAYMENT_STATUS_CHECK = 'ticket_payment_status_ck';
 export const TICKET_EVENT_SEAT_ID_ALLOCATION_ID_CHECK =
   'ticket_event_seat_id_allocation_id_ck';

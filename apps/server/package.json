@@ -23,7 +23,8 @@
     "db:generate": "DOTENV_CONFIG_PATH=../../.env drizzle-kit generate",
     "auth:schema": "DOTENV_CONFIG_PATH=../../.env better-auth generate --config src/core/auth/auth.cli.ts --output src/core/auth/auth.schema.ts --yes && prettier --write src/core/auth/auth.schema.ts",
     "test:cov": "vitest run --coverage",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "test:db": "vitest run --config ./vitest.config.db.ts"
   },
   "dependencies": {
     "@better-auth/core": "^1.7.4",

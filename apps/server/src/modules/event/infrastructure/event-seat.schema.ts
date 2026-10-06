@@ -1,15 +1,18 @@
+import { isNull, sql } from 'drizzle-orm';
 import {
   foreignKey,
   pgTable,
+  pgView,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { seat } from '../../venue/infrastructure/seat.schema.js';
 import {
   EVENT_SEAT_EVENT_ID_VENUE_ID_FK,
   EVENT_SEAT_ID_EVENT_ID_CONSTRAINT,
-  EVENT_SEAT_SEAT_ID_EVENT_ID_CONSTRAINT,
+  EVENT_SEAT_SEAT_ID_EVENT_ID_LIVE_INDEX,
   EVENT_SEAT_SEAT_ID_VENUE_ID_FK,
   EVENT_SEAT_TICKET_TYPE_ID_EVENT_ID_FK,
 } from './event-seat.constraints.js';
@@ -31,12 +34,12 @@ export const eventSeat = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
-    unique(EVENT_SEAT_SEAT_ID_EVENT_ID_CONSTRAINT).on(
-      table.seatId,
-      table.eventId,
-    ),
+    uniqueIndex(EVENT_SEAT_SEAT_ID_EVENT_ID_LIVE_INDEX)
+      .on(table.seatId, table.eventId)
+      .where(sql`${table.deletedAt} IS NULL`),
     unique(EVENT_SEAT_ID_EVENT_ID_CONSTRAINT).on(table.id, table.eventId),
 
     foreignKey({
@@ -55,4 +58,8 @@ export const eventSeat = pgTable(
       foreignColumns: [ticketType.id, ticketType.eventId],
     }).onDelete('restrict'),
   ],
+);
+
+export const eventSeatLive = pgView('event_seat_live').as((qb) =>
+  qb.select().from(eventSeat).where(isNull(eventSeat.deletedAt)),
 );

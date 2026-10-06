@@ -1,8 +1,9 @@
-import { sql } from 'drizzle-orm';
+import { isNull, sql } from 'drizzle-orm';
 import {
   check,
   foreignKey,
   pgTable,
+  pgView,
   timestamp,
   unique,
   uuid,
@@ -31,6 +32,7 @@ export const event = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
     unique(EVENT_ID_VENUE_ID_CONSTRAINT).on(table.id, table.venueId),
@@ -47,4 +49,8 @@ export const event = pgTable(
       foreignColumns: [venue.id],
     }).onDelete('restrict'),
   ],
+);
+
+export const eventLive = pgView('event_live').as((qb) =>
+  qb.select().from(event).where(isNull(event.deletedAt)),
 );

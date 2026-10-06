@@ -1,12 +1,14 @@
-import { sql } from 'drizzle-orm';
+import { isNull, sql } from 'drizzle-orm';
 import {
   char,
   check,
   foreignKey,
   numeric,
   pgTable,
+  pgView,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -15,7 +17,7 @@ import { event } from './event.schema.js';
 import {
   TICKET_TYPE_CURRENCY_FK,
   TICKET_TYPE_EVENT_ID_FK,
-  TICKET_TYPE_EVENT_ID_TYPE_CONSTRAINT,
+  TICKET_TYPE_EVENT_ID_TYPE_LIVE_INDEX,
   TICKET_TYPE_ID_EVENT_ID_CONSTRAINT,
   TICKET_TYPE_PRICE_CHECK,
   TICKET_TYPE_TYPE_CHECK,
@@ -36,9 +38,12 @@ export const ticketType = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
-    unique(TICKET_TYPE_EVENT_ID_TYPE_CONSTRAINT).on(table.eventId, table.type),
+    uniqueIndex(TICKET_TYPE_EVENT_ID_TYPE_LIVE_INDEX)
+      .on(table.eventId, table.type)
+      .where(sql`${table.deletedAt} IS NULL`),
     unique(TICKET_TYPE_ID_EVENT_ID_CONSTRAINT).on(table.id, table.eventId),
 
     check(TICKET_TYPE_TYPE_CHECK, sql`length(btrim(${table.type})) > 0`),
@@ -55,4 +60,8 @@ export const ticketType = pgTable(
       foreignColumns: [currency.code],
     }).onDelete('restrict'),
   ],
+);
+
+export const ticketTypeLive = pgView('ticket_type_live').as((qb) =>
+  qb.select().from(ticketType).where(isNull(ticketType.deletedAt)),
 );

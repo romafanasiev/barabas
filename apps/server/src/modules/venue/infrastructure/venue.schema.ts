@@ -1,5 +1,12 @@
-import { sql } from 'drizzle-orm';
-import { check, pgTable, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { isNull, sql } from 'drizzle-orm';
+import {
+  check,
+  pgTable,
+  pgView,
+  timestamp,
+  uuid,
+  varchar,
+} from 'drizzle-orm/pg-core';
 import { VENUE_CITY_CHECK, VENUE_NAME_CHECK } from './venue.constraints.js';
 
 export const venue = pgTable(
@@ -15,9 +22,14 @@ export const venue = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
     check(VENUE_NAME_CHECK, sql`length(btrim(${table.name})) > 0`),
     check(VENUE_CITY_CHECK, sql`length(btrim(${table.city})) > 0`),
   ],
+);
+
+export const venueLive = pgView('venue_live').as((qb) =>
+  qb.select().from(venue).where(isNull(venue.deletedAt)),
 );

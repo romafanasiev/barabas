@@ -1,11 +1,13 @@
-import { sql } from 'drizzle-orm';
+import { isNull, sql } from 'drizzle-orm';
 import {
   check,
   foreignKey,
   integer,
   pgTable,
+  pgView,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import {
@@ -16,7 +18,7 @@ import { event } from './event.schema.js';
 import {
   TICKET_ALLOCATION_CAPACITY_CHECK,
   TICKET_ALLOCATION_CAPACITY_POSITIVE_CHECK,
-  TICKET_ALLOCATION_EVENT_ID_SECTION_ID_CONSTRAINT,
+  TICKET_ALLOCATION_EVENT_ID_SECTION_ID_LIVE_INDEX,
   TICKET_ALLOCATION_ID_EVENT_ID_CONSTRAINT,
   TICKET_ALLOCATION_EVENT_ID_VENUE_ID_FK,
   TICKET_ALLOCATION_HELD_CHECK,
@@ -50,12 +52,12 @@ export const ticketAllocation = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
-    unique(TICKET_ALLOCATION_EVENT_ID_SECTION_ID_CONSTRAINT).on(
-      table.eventId,
-      table.sectionId,
-    ),
+    uniqueIndex(TICKET_ALLOCATION_EVENT_ID_SECTION_ID_LIVE_INDEX)
+      .on(table.eventId, table.sectionId)
+      .where(sql`${table.deletedAt} IS NULL`),
     unique(TICKET_ALLOCATION_ID_EVENT_ID_CONSTRAINT).on(
       table.id,
       table.eventId,
@@ -112,4 +114,8 @@ export const ticketAllocation = pgTable(
       foreignColumns: [ticketType.id, ticketType.eventId],
     }).onDelete('restrict'),
   ],
+);
+
+export const ticketAllocationLive = pgView('ticket_allocation_live').as((qb) =>
+  qb.select().from(ticketAllocation).where(isNull(ticketAllocation.deletedAt)),
 );

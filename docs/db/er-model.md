@@ -23,7 +23,7 @@ erDiagram
     EventSeat |o..o{ OrderItem : "ordered as"
     TicketAllocation |o..o{ OrderItem : "ordered as"
     Payment ||..o{ Ticket : "issues"
-    EventSeat |o..o| Ticket : "sold as"
+    EventSeat |o..o{ Ticket : "sold as"
     TicketAllocation |o..o{ Ticket : "sold as"
     Ticket ||--o| CheckIn : "burnt by"
     Currency ||..o{ TicketType : "prices"
@@ -37,32 +37,36 @@ erDiagram
       varchar(255) city
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     Section {
-      uuid id PK "UK (venue_id, label), (id, type), (id, capacity)"
+      uuid id PK "UK live (venue_id, label); UK (id, type), (id, capacity)"
       varchar(255) label UK
       int capacity
       uuid venue_id FK
       section_type type
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     Seat {
       uuid id PK
-      uuid section_id FK "UK (section_id, row_no, seat_number), CHECK section_type = 'numbered'"
+      uuid section_id FK "UK live (section_id, row_no, seat_number), CHECK section_type = 'numbered'"
       int row_no UK
       int seat_number UK
       section_type section_type FK "(section_id, section_type)"
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     EventSeat {
-      uuid id PK "aggregate root: EventSeat; UK (seat_id, event_id)"
+      uuid id PK "aggregate root: EventSeat; UK live (seat_id, event_id)"
       uuid event_id FK, UK
       uuid seat_id FK, UK
       uuid ticket_type_id FK
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     Event {
       uuid id PK
@@ -72,18 +76,20 @@ erDiagram
       timestamptz ends_at
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     TicketType {
-      uuid id PK "UK (event_id, type)"
+      uuid id PK "UK live (event_id, type)"
       varchar(255) type
       uuid event_id FK
       numeric price
       char(3) currency FK
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     TicketAllocation {
-      uuid id PK "aggregate root: TicketAllocation; UK(event_id, section_id), CHECK section_type = 'standing'"
+      uuid id PK "aggregate root: TicketAllocation; UK live (event_id, section_id), CHECK section_type = 'standing'"
       uuid event_id FK
       uuid section_id FK
       uuid ticket_type_id FK
@@ -94,6 +100,7 @@ erDiagram
       int capacity
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     Hold {
       uuid id PK "aggregate root: Hold; UK (id, event_id)"
@@ -151,7 +158,7 @@ erDiagram
       timestamptz updated_at
     }
     Ticket {
-      uuid id PK "aggregate root: Ticket; UK sold: event_seat_id, partial WHERE not null"
+      uuid id PK "aggregate root: Ticket; UK sold: event_seat_id, partial WHERE not null and live"
       uuid payment_id FK "(payment_id, payment_status) to payment (id, status)"
       payment_status payment_status "CHECK payment_status = 'succeeded'"
       uuid event_seat_id FK "CHECK num_nonnulls(event_seat_id, allocation_id) = 1"
@@ -162,6 +169,7 @@ erDiagram
       varchar(255) code UK
       timestamptz created_at
       timestamptz updated_at
+      timestamptz deleted_at
     }
     CheckIn {
       uuid id PK "part of Ticket"
@@ -202,11 +210,11 @@ erDiagram
 | `Venue` → `Section` | 1 : 0..N | `section.venue_id NOT NULL`, `section_venue_id_fk` | — |
 | `Venue` → `Event` | 1 : 0..N | `event.venue_id NOT NULL`, `event_venue_id_fk` | — |
 | `Section` → `Seat` | 1 : 0..N | `seat.section_id NOT NULL`, `seat_section_id_venue_id_fk`; только у `numbered` — `seat_section_id_section_type_fk` + `seat_section_type_ck` | — |
-| `Section` → `TicketAllocation` | 1 : 0..N, на событие 0..1 | `ticket_allocation.section_id NOT NULL`, `ticket_allocation_section_id_venue_id_fk`; максимум на событие — `ticket_allocation_event_id_section_id_uq` (N:M `Event × Section`) | — |
+| `Section` → `TicketAllocation` | 1 : 0..N, на событие 0..1 | `ticket_allocation.section_id NOT NULL`, `ticket_allocation_section_id_venue_id_fk`; максимум на событие — `ticket_allocation_event_id_section_id_live_uq` (N:M `Event × Section`) | максимум действует среди живых; удалённые квоты — сколько угодно |
 | `Event` → `TicketType` | 1 : 0..N | `ticket_type.event_id NOT NULL`, `ticket_type_event_id_fk` | — |
 | `Event` → `EventSeat` | 1 : 0..N | `event_seat.event_id NOT NULL`, `event_seat_event_id_venue_id_fk` | — |
 | `Event` → `TicketAllocation` | 1 : 0..N | `ticket_allocation.event_id NOT NULL`, `ticket_allocation_event_id_venue_id_fk` | — |
-| `Seat` → `EventSeat` | 1 : 0..N, на событие 0..1 | `event_seat.seat_id NOT NULL`, `event_seat_seat_id_venue_id_fk`; максимум на событие — `event_seat_seat_id_event_id_uq` (N:M `Event × Seat`) | — |
+| `Seat` → `EventSeat` | 1 : 0..N, на событие 0..1 | `event_seat.seat_id NOT NULL`, `event_seat_seat_id_venue_id_fk`; максимум на событие — `event_seat_seat_id_event_id_live_uq` (N:M `Event × Seat`) | максимум действует среди живых; удалённые — сколько угодно |
 | `TicketType` → `EventSeat` | 1 : 0..N | `event_seat.ticket_type_id NOT NULL`, `event_seat_ticket_type_id_event_id_fk` | — |
 | `TicketType` → `TicketAllocation` | 1 : 0..N | `ticket_allocation.ticket_type_id NOT NULL`, `ticket_allocation_ticket_type_id_event_id_fk` | — |
 | `TicketType` → `Ticket` | 1 : 0..N | `ticket.ticket_type_id NOT NULL`, `ticket_ticket_type_id_fk` — простой FK, без пары с событием | — |
@@ -222,7 +230,7 @@ erDiagram
 | `EventSeat` → `OrderItem` | 0..1 : 0..N | nullable `order_item_event_seat_id_fk` + `order_item_event_seat_id_allocation_id_ck` (ровно одна ссылка). В одном заказе место не больше одного раза — `order_item_order_id_event_seat_id_uq` (`I-39`) | — |
 | `TicketAllocation` → `OrderItem` | 0..1 : 0..N | nullable `order_item_allocation_id_fk` + тот же `CHECK`. В одном заказе квота не больше одного раза — `order_item_order_id_allocation_id_uq` (`I-39`) | — |
 | `Payment` → `Ticket` | 1 : 0..N | `ticket.payment_id NOT NULL`, `ticket_payment_id_payment_status_fk` на `payment (id, status)` + `ticket_payment_status_ck` | детей может иметь только `succeeded`-платёж |
-| `EventSeat` → `Ticket` | 0..1 : 0..1 | nullable `ticket_event_seat_id_fk`, `ticket_event_seat_id_uq` (partial, `WHERE event_seat_id IS NOT NULL`) | безусловно, пока нет возврата (см. `M1-10`) |
+| `EventSeat` → `Ticket` | 0..1 : 0..N, живых 0..1 | nullable `ticket_event_seat_id_fk`, `ticket_event_seat_id_live_uq` (partial, `WHERE event_seat_id IS NOT NULL AND deleted_at IS NULL`) | максимум действует среди живых; удалённый билет — возвращённый, их сколько угодно (`M1-10`) |
 | `TicketAllocation` → `Ticket` | 0..1 : 0..N | nullable `ticket_allocation_id_fk` + `ticket_event_seat_id_allocation_id_ck` | — |
 | `Ticket` → `CheckIn` | 1 : 0..1 | `check_in.ticket_id NOT NULL`, `check_in_ticket_id_fk`, `check_in_ticket_id_uq` | — |
 | `Currency` → `TicketType` | 1 : 0..N | `ticket_type.currency NOT NULL`, `ticket_type_currency_fk` | — |
@@ -232,12 +240,62 @@ erDiagram
 | `Currency` → `Ticket` | 1 : 0..N | `ticket.currency NOT NULL`, `ticket_currency_fk` | — |
 
 **N:M и их связки.** `Event × Seat` — `event_seat`, `Event × Section` — `ticket_allocation`:
-`UNIQUE` на паре есть у обеих. `Hold × EventSeat` (`hold_seat_item`) и
+уникальность пары есть у обеих, среди живых строк (`M1-10`). `Hold × EventSeat` (`hold_seat_item`) и
 `Hold × TicketAllocation` (`hold_allocated_item`) уникальны только среди `active`, строки
 `released` — история. `Order × EventSeat` и `Order × TicketAllocation` — одна связка `order_item` с двумя
 `UNIQUE` на паре (`I-39`). Оба ключа обычные: `NULL` в них по умолчанию различны, поэтому
 строки квот с пустым `event_seat_id` не сталкиваются друг с другом. `NULLS NOT DISTINCT`
 сломал бы заказ из двух квот.
+
+## Удаление
+
+Решение по каждой таблице принимается двумя вопросами (`M1-10`, пункт 2):
+
+1. Есть ли на строку ссылки — прямые или по цепочке `ON DELETE RESTRICT`, — которые обязаны
+   пережить её удаление?
+2. Бывает ли в домене момент, когда строка должна перестать существовать?
+
+| Ответ | Решение |
+| --- | --- |
+| да + да | **soft** — строка остаётся в базе и помечается удалённой |
+| да + нет | **не удаляется** — история, жизнь выражается статусом |
+| нет + да | **hard** — физический `DELETE` |
+| нет + нет | **не удаляется** — строка-факт, на которую просто никто не ссылается |
+
+Решение по таблицам (`M1-10`, пункт 3). Часть агрегата отдельно не удаляется: её жизнь — жизнь
+корня, а корень здесь либо soft, либо не удаляется вовсе, поэтому каскад `ON DELETE CASCADE`
+внутри агрегата не срабатывает ни разу.
+
+| Таблица | Решение | Почему |
+| --- | --- | --- |
+| `venue` | **soft** | да: на неё `RESTRICT` из `section` и `event`, через них — проданные билеты. Да: площадка закрывается |
+| `section` | **soft** | да: `seat` → `event_seat` → `ticket`, `ticket_allocation` → `ticket`. Да: зал перестраивают |
+| `seat` | **soft** | да: после первого выхода в продажу на место ссылается `event_seat`, и `RESTRICT` не даст его удалить (проба — в issue). Да: кресло демонтируют. Место, ни разу не выходившее в продажу, физически удалить можно, но правило задаётся на таблицу, а не на строку |
+| `event` | **soft** | да: `ticket_type`, `event_seat`, `ticket_allocation`, `hold`. Да: концерт снимают из каталога |
+| `ticket_type` | **soft** | да: `event_seat`, `ticket_allocation`, `ticket`. Да: тип снимают с продажи (закончился Early Bird) |
+| `ticket_allocation` | **soft** | да: `hold_allocated_item`, `order_item`, `ticket`. Да: квоту снимают с продажи |
+| `event_seat` | **soft** | да: `hold_seat_item`, `order_item`, `ticket`. Да: место снимают с продажи в одном событии (решение 11) |
+| `ticket` | **soft** | да: `check_in` и история продажи. Да: возврат — удалённый билет значит «возвращённый» (решение `M1-09`) |
+| `currency` | не удаляется | да: на код ссылаются цены, заказы, платежи, билеты. Нет: код ISO не перестаёт существовать — валюту перестают принимать, а это не удаление |
+| `hold` | не удаляется | да: `order` по `RESTRICT`. Нет: жизнь холда — статус (`expired`, `cancelled`) |
+| `hold_seat_item` | не удаляется | часть `Hold`; своя жизнь — статус `released` |
+| `hold_allocated_item` | не удаляется | часть `Hold`; то же |
+| `order` | не удаляется | да: `payment`. Нет: жизнь заказа — статус (`cancelled`, `expired`, `refunded`) |
+| `order_item` | не удаляется | часть `Order` |
+| `payment` | не удаляется | да: `ticket`. Нет: неудачный платёж — `failed`, а не удалённый |
+| `check_in` | не удаляется | нет + нет: на гашение никто не ссылается, но это факт, отменить его нельзя |
+
+Итого восемь soft и восемь «не удаляется». **Ни одна таблица не получила hard.** Колонка —
+`deleted_at timestamptz`, пустая у живой строки.
+
+**`UK live`** на диаграмме — partial unique index `… WHERE deleted_at IS NULL`: уникальность
+действует среди живых строк. Ключи вида `(id, X)` остаются полными: в них есть `id`, и на них
+ссылаются составные FK, а FK не может ссылаться на partial index.
+
+**Чтение — только через `*_live`.** У каждой soft-таблицы есть view `<таблица>_live` с
+`WHERE deleted_at IS NULL`. Код читает view; базовую таблицу читают только `*.schema.ts`,
+`*.report.ts` и тесты. Автоматическая проверка правила придёт в `M1-18` вместе с первым кодом,
+который читает эти таблицы.
 
 ## Агрегаты
 

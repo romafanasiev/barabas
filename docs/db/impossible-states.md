@@ -48,7 +48,7 @@
 | Билет без ссылки или с двумя | `ticket_event_seat_id_allocation_id_ck` | `0004_loose_yellow_claw.sql:101` |
 | Билет по неуспешному платежу | `ticket_payment_status_ck` + FK на `payment (id, status)` | `0004_loose_yellow_claw.sql:100` |
 | Место, удержанное дважды | partial unique `hold_seat_item_event_seat_id_active_uq` | `0004_loose_yellow_claw.sql:124` |
-| Место, проданное дважды | partial unique `ticket_event_seat_id_uq` | `0004_loose_yellow_claw.sql:126` |
+| Место, проданное дважды (среди живых билетов) | partial unique `ticket_event_seat_id_live_uq` | `0007_soft_delete.sql:18` |
 | Два успешных платежа по заказу | partial unique `payment_order_id_succeeded_uq` | `0004_loose_yellow_claw.sql:125` |
 | Два платежа по одному ключу идемпотентности | `payment_idempotency_key_uq` | `0004_loose_yellow_claw.sql:83` |
 | Два билета с одним кодом | `ticket_code_uq` | `0004_loose_yellow_claw.sql:99` |

@@ -1,10 +1,11 @@
-import { sql } from 'drizzle-orm';
+import { isNull, sql } from 'drizzle-orm';
 import {
   char,
   check,
   foreignKey,
   numeric,
   pgTable,
+  pgView,
   timestamp,
   unique,
   uniqueIndex,
@@ -23,7 +24,7 @@ import {
   TICKET_CURRENCY_FK,
   TICKET_EVENT_SEAT_ID_ALLOCATION_ID_CHECK,
   TICKET_EVENT_SEAT_ID_FK,
-  TICKET_EVENT_SEAT_ID_INDEX,
+  TICKET_EVENT_SEAT_ID_LIVE_INDEX,
   TICKET_PAYMENT_ID_PAYMENT_STATUS_FK,
   TICKET_PAYMENT_STATUS_CHECK,
   TICKET_TICKET_PRICE_CHECK,
@@ -52,6 +53,7 @@ export const ticket = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
     unique(TICKET_CODE_CONSTRAINT).on(table.code),
@@ -71,10 +73,12 @@ export const ticket = pgTable(
        does not let two holds take a seat. This one catches what that never sees — a bug in
        the issuing code, a manual INSERT, a payment processed twice. Quota tickets are not
        affected: NULLs do not collide in a unique index, and there the count is guarded by
-       ticket_allocation.sold. */
-    uniqueIndex(TICKET_EVENT_SEAT_ID_INDEX)
+       ticket_allocation.sold. A deleted ticket is a refunded one (M1-10). */
+    uniqueIndex(TICKET_EVENT_SEAT_ID_LIVE_INDEX)
       .on(table.eventSeatId)
-      .where(sql`${table.eventSeatId} IS NOT NULL`),
+      .where(
+        sql`${table.eventSeatId} IS NOT NULL AND ${table.deletedAt} IS NULL`,
+      ),
 
     foreignKey({
       name: TICKET_PAYMENT_ID_PAYMENT_STATUS_FK,
@@ -102,4 +106,8 @@ export const ticket = pgTable(
       foreignColumns: [ticketAllocation.id],
     }).onDelete('restrict'),
   ],
+);
+
+export const ticketLive = pgView('ticket_live').as((qb) =>
+  qb.select().from(ticket).where(isNull(ticket.deletedAt)),
 );
