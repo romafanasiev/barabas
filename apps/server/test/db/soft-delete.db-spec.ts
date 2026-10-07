@@ -11,10 +11,10 @@ import { SECTION_VENUE_ID_LABEL_LIVE_INDEX } from '../../src/modules/venue/infra
 import { ids, seedCatalog } from '../../utils/tests/db/catalog.fixture.js';
 import {
   expectViolation,
+  SqlState,
   withRollback,
 } from '../../utils/tests/db/db.helpers.js';
 
-const UNIQUE_VIOLATION = '23505';
 const seat66 = '30000000-0000-0000-0000-000000000066';
 
 type Case = {
@@ -113,7 +113,12 @@ describe.each(cases)('soft delete: $index', (c) => {
     withRollback(async (client) => {
       await prepare(client, c);
 
-      await expectViolation(client, c.insert, UNIQUE_VIOLATION, c.index);
+      await expectViolation(
+        client,
+        c.insert,
+        SqlState.uniqueViolation,
+        c.index,
+      );
     }));
 
   it('lets two deleted rows share the key', () =>
@@ -143,7 +148,7 @@ describe('soft delete: keys that stay global', () => {
       await expectViolation(
         client,
         issue,
-        UNIQUE_VIOLATION,
+        SqlState.uniqueViolation,
         TICKET_CODE_CONSTRAINT,
       );
     }));
