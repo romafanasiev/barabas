@@ -7,6 +7,7 @@
     "vitest.config.e2e.ts",
     "vitest.config.db.ts",
     "utils/**/*.ts",
+    "scripts/**/*.ts",
     "drizzle.config.ts"
   ],
   "compilerOptions": {

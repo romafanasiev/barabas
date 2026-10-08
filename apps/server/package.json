@@ -21,6 +21,7 @@
     "test:watch": "vitest",
     "db:migrate": "DOTENV_CONFIG_PATH=../../.env drizzle-kit migrate",
     "db:generate": "DOTENV_CONFIG_PATH=../../.env drizzle-kit generate",
+    "db:seed": "node scripts/seed.ts",
     "auth:schema": "DOTENV_CONFIG_PATH=../../.env better-auth generate --config src/core/auth/auth.cli.ts --output src/core/auth/auth.schema.ts --yes && prettier --write src/core/auth/auth.schema.ts",
     "test:cov": "vitest run --coverage",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
