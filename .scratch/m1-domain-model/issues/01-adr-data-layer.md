@@ -1,6 +1,6 @@
 # M1-01 — ADR: выбор слоя данных
 
-Status: ready-for-human
+Status: resolved
 
 ## Задача
 

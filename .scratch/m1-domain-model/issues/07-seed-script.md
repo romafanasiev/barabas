@@ -1,6 +1,6 @@
 # M1-07 — Seed-скрипт: площадка, концерт, 500 мест
 
-Status: ready-for-human
+Status: resolved
 
 ## Задача
 

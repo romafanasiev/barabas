@@ -1,5 +1,6 @@
 /* Every constraint name the schema declares, in one place: tests import from here,
    and the coverage test compares this list with the live database. */
+export * from '../../../src/core/infrastructure/postgres/audit/audit-log.constraints.js';
 export * from '../../../src/modules/event/infrastructure/currency.constraints.js';
 export * from '../../../src/modules/event/infrastructure/event-seat.constraints.js';
 export * from '../../../src/modules/event/infrastructure/event.constraints.js';

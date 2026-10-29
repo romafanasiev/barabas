@@ -1,6 +1,6 @@
 # M1-05 — Миграция: `holds`, `orders`, `order_items`, `payments`, `tickets`
 
-Status: ready-for-human
+Status: resolved
 
 ## Задача
 
